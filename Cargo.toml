@@ -1,0 +1,9 @@
+[package]
+name = "rustweb-test-game"
+version = "0.1.0"
+authors = ["Eli Dupree <vcs@elidupree.com>"]
+
+[dependencies]
+stdweb = "0.3"
+serde = "1"
+serde_derive = "1"
