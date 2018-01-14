@@ -48,6 +48,8 @@ fn draw_tile (location: Vector2 <usize>, tile: & Tile) {
   js!{
     context.strokeStyle = "rgba(0,0,0,255)";
     context.stroke();
+    context.fillStyle = "rgba(255,0,0,"+@{tile.variable as f64/23.0}+")";
+    context.fill ();
   }
 }
 
@@ -56,9 +58,10 @@ fn main_loop (mut game: Game) {
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
   }
-  for (first, whatever) in game.tiles.iter().enumerate() {
-    for (second, tile) in whatever.iter().enumerate() {
+  for (first, whatever) in game.tiles.iter_mut().enumerate() {
+    for (second, tile) in whatever.iter_mut().enumerate() {
       draw_tile (Vector2::new (first, second), tile);
+      tile.variable = (tile.variable + first as u32) % 23;
     }
   }
   web::window().request_animation_frame (move |_| main_loop (game));
