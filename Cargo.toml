@@ -7,3 +7,5 @@ authors = ["Eli Dupree <vcs@elidupree.com>"]
 stdweb = "0.3"
 serde = "1"
 serde_derive = "1"
+nalgebra = "0.13"
+array_ext = "0.2"
