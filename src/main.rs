@@ -83,6 +83,14 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   Detector::changed_position (accessor, get_detector (accessor), object);
 }
 
+fn radius (varying: & ObjectVarying)-> {
+  match varying.object_type {
+    Palace (_) => ,
+    Guild (_) =>,
+    Ranger (_) => ,
+  }
+}
+
 
 define_event! {
   struct BuildGuild {palace: ObjectHandle},
@@ -134,7 +142,9 @@ struct Tile {
 
 #[derive (Serialize, Deserialize, Debug)]
 struct Game {
-  tiles: [[Tile; 10]; 10],
+  steward: Steward,
+  now: Time,
+  last_ui_time: f64,
 }
 
 js_serializable!(Game);
@@ -171,7 +181,27 @@ fn draw_tile (location: Vector2 <usize>, tile: & Tile) {
   }
 }
 
-fn main_loop (mut game: Game) {
+fn draw_game <A: EventAccessor <Steward = Steward>>(accessor: &A) {
+  js! {
+    context.clearRect (0, 0, canvas.width, canvas.height);
+  }
+  for handle in Detector::objects_near_box (accessor, get_detector (accessor), BoundingBox::centered (Vector2::new (0, 0), TODO), None) {
+    
+  }
+}
+
+fn main_loop (time: f64, mut game: Game) {
+  let observed_duration = time - game.last_ui_time;
+  let duration_to_simulate = if observed_duration < 100.0 {observed_duration} else {100.0};
+  let duration_to_simulate = (duration_to_simulate*(SECOND as f64)/1000.0) as Time;
+  assert!(duration_to_simulate >= 0) ;
+  game.last_ui_time = time;
+  game.now += duration_to_simulate;
+  let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
+  draw_game (& snapshot);
+  steward.forget_before (& game.now);
+  
+  /*
   //game.variable += 1;
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
@@ -181,8 +211,8 @@ fn main_loop (mut game: Game) {
       draw_tile (Vector2::new (first, second), tile);
       tile.variable = (tile.variable + first as u32) % 23;
     }
-  }
-  web::window().request_animation_frame (move |_| main_loop (game));
+  }*/
+  web::window().request_animation_frame (move | time | main_loop (time, game));
 }
 
 fn main() {
@@ -201,7 +231,7 @@ fn main() {
   
   let game = Game {tiles: Array::from_fn (|_| Array::from_fn (|_| Tile {variable: 0}))};
   
-  web::window().request_animation_frame (move |_| main_loop (game));
+  web::window().request_animation_frame (move | time | main_loop (time, game));
 
   stdweb::event_loop();
 }
