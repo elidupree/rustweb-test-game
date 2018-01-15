@@ -9,6 +9,124 @@ use stdweb::web;
 use array_ext::*;
 use nalgebra::Vector2;
 
+
+
+
+
+
+#[derive (Serialize, Deserialize, Debug)]
+struct Globals {
+  detector: Timeline <DataHandle <Detector>>,
+}
+
+#[derive (Clone, Serialize, Deserialize, Debug)]
+enum ObjectType {
+  Palace (Palace),
+  Guild (Guild),
+  Ranger (Ranger),
+}
+
+
+#[derive (Clone, Serialize, Deserialize, Debug)]
+struct Object {
+  id: DeterministicRandomId,
+  varying: Timeline <ObjectVarying>,
+}
+
+#[derive (Clone, Serialize, Deserialize, Debug)]
+struct ObjectVarying {
+  object_type: ObjectType,
+  trajectory: LinearTrajectory2,
+  detector_data: DetectorData,
+  prediction: Option <EventHandle>,
+  destroyed: bool,
+}
+
+fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, trajectory: LinearTrajectory2, object_type: ObjectType) {
+  let created = accessor::new_handle (Object {id: DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), varying: Timeline::new()});
+  set (accessor, created.varying, ObjectVarying {
+    object_type: object_type, trajectory: trajectory, detector_data: None, prediction: None, destroyed: false,
+  });
+  Detector::insert (accessor, get_detector (accessor), created, Some (source_object));
+  object_changed (accessor, & created);
+}
+
+
+fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  modify (accessor, & object.varying, | varying | {
+    varying.prediction = None;
+    varying.destroyed = true;
+  });
+  Detector::remove (accessor, get_detector (accessor), object);
+}
+
+
+fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
+  modify (accessor, & object.varying, | varying | {
+    let iterator = iter::empty().chain (
+      match varying.object_type {
+        Palace (palace) => {
+          iter::once (accessor.create_prediction (palace.gold.when_reaches (100), id, BuildGuild {palace: object})
+        },
+        Guild (guild) {
+          iter::once (accessor.create_prediction (guild.gold.when_reaches (100), id, RecruitRanger {guild: object})
+        },
+        Ranger (ranger) => {
+          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (100), id, Think {ranger: object})
+        },
+      }
+    );
+    
+    varying.prediction = iter.min_by_key (| prediction | prediction.extended_time());
+  });
+  Detector::changed_position (accessor, get_detector (accessor), object);
+}
+
+
+define_event! {
+  struct BuildGuild {palace: ObjectHandle},
+  ,
+  fn execute (&self, accessor) {
+    modify_object (accessor, & self.palace, | varying | {
+      varying.gold.add (accessor.now(), - 100) ;
+    });
+    let varying = query (accessor, palace.varying) ;
+    create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
+      LinearTrajectory2::constant (accessor.now(), varying.trajectory.evaluate (accessor.now()) + random vector (10 strides)),
+      ObjectType::Guild (Guild {gold: LinearTrajectory::new (0, TODO)}),
+    );
+  }
+}
+
+
+
+define_event! {
+  struct Think {ranger: ObjectHandle},
+  ,
+  fn execute (&self, accessor) {
+    let attack = None;
+    modify_object (accessor, & self.ranger, | varying | {
+      varying.thoughts.add (accessor.now(), - 100) ;
+      for object in Detector::objects_near_box (accessor, get_detector (accessor), BoundingBox::centered (varying.trajectory.evaluate (accessor.now()), RANGER_RANGE), & self.ranger) {
+        if is_enemy (accessor, & self.ranger, & object) {
+          if distance <RANGER_RANGE {
+            attack = object.clone();
+          }
+        }
+      }
+    });
+    if let Some(victim) = attack {
+      destroy_object (accessor, & victim);
+    }
+  }
+}
+
+
+
+
+
+
 #[derive (Serialize, Deserialize, Debug)]
 struct Tile {
   variable: u32,
