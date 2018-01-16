@@ -10,18 +10,18 @@ extern crate array_ext;
 extern crate time_steward;
 
 use std::iter;
-use std::ops::{Add, Mul};
+use std::ops::{Add, AddAssign, Mul};
 
 use stdweb::web;
 use array_ext::*;
-use nalgebra::Vector2;
+use nalgebra::{Vector2};
 
 
 use time_steward::{DeterministicRandomId};
-use time_steward::{PersistentTypeId, ListedType, PersistentlyIdentifiedType, DataHandleTrait, DataTimelineCellTrait, QueryResult, Basics as BasicsTrait};
+use time_steward::{PersistentTypeId, ListedType, PersistentlyIdentifiedType, DataTimelineCellTrait, QueryResult, Basics as BasicsTrait};
 pub use time_steward::stewards::{simple_full as steward_module};
 use steward_module::{TimeSteward, Event, DataHandle, DataTimelineCell, Accessor, EventAccessor, FutureCleanupAccessor, simple_timeline, bbox_collision_detection_2d as collisions};
-use simple_timeline::{SimpleTimeline, query, set, destroy};
+use simple_timeline::{SimpleTimeline, query, set};
 use self::collisions::{NumDimensions, Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
 
@@ -54,6 +54,7 @@ impl Event for $Struct {
 }
 
 type Timeline <T> = DataTimelineCell <SimpleTimeline <T, Steward>>;
+fn new_timeline <T: QueryResult> ()->Timeline <T> {DataTimelineCell::new (SimpleTimeline::new())}
 type Detector = SimpleGridDetector <Space>;
 type BoundingBox = collisions::BoundingBox<Space>;
 type DetectorData = collisions::simple_grid::DetectorDataPerObject<Space>;
@@ -69,6 +70,11 @@ const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
 const RANGER_RANGE: Coordinate = STRIDE*10;
 
+fn distance_squared (first: Vector, second: Vector)->Coordinate {
+  (second [0] - first [0])*(second [0] - first [0])
+  + (second [1] - first [1])*(second [1] - first [1])
+}
+
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct LinearTrajectory <V> {
   origin: Time,
@@ -77,7 +83,7 @@ struct LinearTrajectory <V> {
 }
 
 impl <V> LinearTrajectory <V>
-where Vector: Add <V, Output = V> + Mul <Time, Output = V> {
+where V: Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
   fn update (&mut self, time: Time) {
     self.position = self.evaluate (time) ;
     self.origin = time;
@@ -97,6 +103,10 @@ where Vector: Add <V, Output = V> + Mul <Time, Output = V> {
   fn evaluate (&self, time: Time)->V {
     self.position + self.velocity*(time - self.origin)
   }
+  fn new (time: Time, position: V, velocity: V)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: velocity}
+  }
+  
 }
 
 type LinearTrajectory1 = LinearTrajectory <Coordinate>;
@@ -107,6 +117,14 @@ impl LinearTrajectory1 {
     if self.evaluate (now) >= amount {Some (now)}
     else if self.velocity <= 0 {None}
     else {Some (self.origin + ((amount - self.position) + (self.velocity-1))/self.velocity)}
+  }
+  fn constant (time: Time, position: Coordinate)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: 0}
+  }
+}
+impl LinearTrajectory2 {
+  fn constant (time: Time, position: Vector)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
   }
 }
 
@@ -154,7 +172,7 @@ impl collisions::Space for Space {
   fn current_bounding_box<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>)->BoundingBox {
     let varying = query (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
-    BoundingBox::centered (center, radius (&varying))
+    BoundingBox::centered (to_collision_vector (center), radius (&varying) as u64)
   }
   fn when_escapes<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, bounds: BoundingBox)->Option<<<Self::Steward as TimeSteward>::Basics as BasicsTrait>::Time> {
     let varying = query (accessor, & object.varying);
@@ -230,13 +248,21 @@ struct Ranger {
   target: Option <ObjectHandle>,
 }
 
+macro_rules! unwrap_object_type {
+  (
+    $varying: expr, $Variant: ident
+  ) => {
+match $varying.object_type {ObjectType::$Variant (value) => value,_=> unreachable!()}
+  }
+}
+
 
 fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, trajectory: LinearTrajectory2, object_type: ObjectType) {
-  let created = accessor.new_handle (Object {id: DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), varying: Timeline::new()});
-  set (accessor, created.varying, ObjectVarying {
-    object_type: object_type, trajectory: trajectory, detector_data: None, prediction: None, destroyed: false,
+  let created = accessor.new_handle (Object {id: DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), varying: new_timeline()});
+  set (accessor, & created.varying, ObjectVarying {
+    object_type: object_type, trajectory: trajectory, team: query (accessor, & source_object.varying).team, detector_data: None, prediction: None, destroyed: false,
   });
-  Detector::insert (accessor, get_detector (accessor), created, Some (source_object));
+  Detector::insert (accessor, & get_detector (accessor), & created, Some (source_object));
   object_changed (accessor, & created);
 }
 
@@ -246,7 +272,7 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
     varying.prediction = None;
     varying.destroyed = true;
   });
-  Detector::remove (accessor, get_detector (accessor), object);
+  Detector::remove (accessor, & get_detector (accessor), object);
 }
 
 fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
@@ -275,13 +301,13 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
     let iterator = iter::empty().chain (
       match varying.object_type {
         ObjectType::Palace (palace) => {
-          iter::once (accessor.create_prediction (palace.gold.when_reaches (100*SECOND), id, BuildGuild {palace: object}))
+          iter::once (accessor.create_prediction (palace.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, BuildGuild {palace: object.clone()}))
         },
         ObjectType::Guild (guild) => {
-          iter::once (accessor.create_prediction (guild.gold.when_reaches (100*SECOND), id, RecruitRanger {guild: object}))
+          iter::once (accessor.create_prediction (guild.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, RecruitRanger {guild: object.clone()}))
         },
         ObjectType::Ranger (ranger) => {
-          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (100*SECOND), id, Think {ranger: object}))
+          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, Think {ranger: object.clone()}))
         },
       }
     );
@@ -305,12 +331,12 @@ define_event! {
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.palace, | varying | {
-      varying.gold.add (accessor.now(), - 100) ;
+      unwrap_object_type!(varying, Palace).gold.add (*accessor.now(), - 100) ;
     });
     let varying = query (accessor, &self.palace.varying) ;
     create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
-      LinearTrajectory2::constant (accessor.now(), varying.trajectory.evaluate (accessor.now()) + Vector2::new (0, 10*STRIDE)),
-      ObjectType::Guild (Guild {gold: LinearTrajectory::new (0, 10)}),
+      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + Vector2::new (0, PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
+      ObjectType::Guild (Guild {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
     );
   }
 }
@@ -323,10 +349,12 @@ define_event! {
   fn execute (&self, accessor: &mut Accessor) {
     let attack = None;
     modify_object (accessor, & self.ranger, | varying | {
-      match varying.object_type {Ranger (ranger) => ranger,_=> unreachable!()}.thoughts.add (accessor.now(), - 100) ;
-      for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (varying.trajectory.evaluate (*accessor.now())), RANGER_RANGE as u64), Some (& self.ranger)) {
+      
+      unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 100) ;
+      let position = varying.trajectory.evaluate (*accessor.now());
+      for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& self.ranger)) {
         if is_enemy (accessor, & self.ranger, & object) {
-          if distance < RANGER_RANGE {
+          if distance_squared (position, query (accessor, & object.varying).trajectory.evaluate (*accessor.now())) <= RANGER_RANGE*RANGER_RANGE {
             attack = Some (object.clone());
           }
         }
