@@ -60,7 +60,7 @@ type DetectorData = collisions::simple_grid::DetectorDataPerObject<Space>;
 
 type Time = i64;
 type Coordinate = i64;
-//type Vector =Vector2 <Coordinate>;
+type Vector = Vector2 <Coordinate>;
 
 const SECOND: Time = 1 << 20;
 const STRIDE: Coordinate = SECOND << 8;
@@ -69,35 +69,47 @@ const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
 const RANGER_RANGE: Coordinate = STRIDE*10;
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
-struct LinearTrajectory2 <Vector> {
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+struct LinearTrajectory <V> {
   origin: Time,
-  position: Vector,
-  velocity: Vector,
+  position: V,
+  velocity: V,
 }
 
-impl <Vector> LinearTrajectory2 <Vector>
-where Vector: Add <Vector, Output = Vector> + Mul <Time, Output = Vector> {
+impl <V> LinearTrajectory <V>
+where Vector: Add <V, Output = V> + Mul <Time, Output = V> {
   fn update (&mut self, time: Time) {
     self.position = self.evaluate (time) ;
     self.origin = time;
   }
-  fn add (&mut self, time: Time, added: Vector) {
+  fn add (&mut self, time: Time, added: V) {
     self.update (time) ;
     self.position += added;
   }
-  fn add_velocity (&mut self, time: Time, added: Vector) {
+  fn add_velocity (&mut self, time: Time, added: V) {
     self.update (time) ;
     self.velocity += added;
   }
-  fn set_velocity (&mut self, time: Time, added: Vector) {
+  fn set_velocity (&mut self, time: Time, added: V) {
     self.update (time) ;
     self.velocity = added;
   }
-  fn evaluate (&self, time: Time)->Vector {
+  fn evaluate (&self, time: Time)->V {
     self.position + self.velocity*(time - self.origin)
   }
 }
+
+type LinearTrajectory1 = LinearTrajectory <Coordinate>;
+type LinearTrajectory2 = LinearTrajectory <Vector>;
+
+impl LinearTrajectory1 {
+  fn when_reaches (&self, now: Time, amount: Coordinate)->Option <Time> {
+    if self.evaluate (now) >= amount {Some (now)}
+    else if self.velocity <= 0 {None}
+    else {Some (self.origin + ((amount - self.position) + (self.velocity-1))/self.velocity)}
+  }
+}
+
 
 
 
@@ -106,6 +118,10 @@ fn to_collision_space (coordinate: Coordinate)->collisions::Coordinate {
 }
 fn from_collision_space (coordinate: collisions::Coordinate)->Coordinate {
   (coordinate.wrapping_add(1u64 << 63)) as Coordinate
+}
+
+fn to_collision_vector (vector: Vector)->[collisions::Coordinate; 2] {
+  Array::from_fn (| dimension | to_collision_space (vector [dimension]))
 }
 
 
@@ -132,21 +148,21 @@ impl collisions::Space for Space {
     modify (accessor, &object.varying, | varying | varying.detector_data = data);
   }
   fn unique_id<A: EventAccessor <Steward = Self::Steward>>(&self, _accessor: &A, object: &DataHandle<Self::Object>)->Self::UniqueId {
-    object.index
+    object.id
   }
 
-  fn current_bounding_box<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>)->BoundingBox <Self> {
+  fn current_bounding_box<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>)->BoundingBox {
     let varying = query (accessor, & object.varying);
-    let center = varying.trajectory.evaluate (accessor.now());
-    BoundingBox::centered (center, radius (varying)
+    let center = varying.trajectory.evaluate (*accessor.now());
+    BoundingBox::centered (center, radius (&varying))
   }
-  fn when_escapes<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, bounds: BoundingBox <Self>)->Option<<<Self::Steward as TimeSteward>::Basics as BasicsTrait>::Time> {
+  fn when_escapes<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, bounds: BoundingBox)->Option<<<Self::Steward as TimeSteward>::Basics as BasicsTrait>::Time> {
     let varying = query (accessor, & object.varying);
     varying.trajectory.approximately_when_escapes (
       accessor.now().clone(),
       [
-        [from_collision_space (bounds.bounds [0] [0]) + radius (varying), from_collision_space (bounds.bounds [0] [1]) - radius (varying)],
-        [from_collision_space (bounds.bounds [1] [0]) + radius (varying), from_collision_space (bounds.bounds [1] [1]) - radius (varying)],
+        [from_collision_space (bounds.bounds [0] [0]) + radius (&varying), from_collision_space (bounds.bounds [0] [1]) - radius (&varying)],
+        [from_collision_space (bounds.bounds [1] [0]) + radius (&varying), from_collision_space (bounds.bounds [1] [1]) - radius (&varying)],
       ]
     )
   }
@@ -158,17 +174,18 @@ pub struct Basics {}
 impl BasicsTrait for Basics {
   type Time = Time;
   type Globals = Globals;
-  type Types = ();
+  type Types = (ListedType <BuildGuild>);
 }
 
-pub type Steward = steward_module::Steward <Basics>;
+type Steward = steward_module::Steward <Basics>;
+type EventHandle = <Steward as TimeSteward>::EventHandle;
 
 #[derive (Serialize, Deserialize, Debug)]
 struct Globals {
   detector: Timeline <DataHandle <Detector>>,
 }
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 enum ObjectType {
   Palace (Palace),
   Guild (Guild),
@@ -181,32 +198,35 @@ struct Object {
   id: DeterministicRandomId,
   varying: Timeline <ObjectVarying>,
 }
+impl PersistentlyIdentifiedType for Object {
+  const ID: PersistentTypeId = PersistentTypeId(0x2079a1bb8d4e9d9f);
+}
 type ObjectHandle = DataHandle <Object>;
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct ObjectVarying {
   object_type: ObjectType,
   trajectory: LinearTrajectory2,
-  detector_data: DetectorData,
+  detector_data: Option <DetectorData>,
   team: usize,
   prediction: Option <EventHandle>,
   destroyed: bool,
 }
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct Palace {
-  gold: LinearTrajectory,
+  gold: LinearTrajectory1,
 }
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct Guild {
-  gold: LinearTrajectory,
+  gold: LinearTrajectory1,
 }
 
 
-#[derive (Clone, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct Ranger {
-  thoughts: LinearTrajectory,
+  thoughts: LinearTrajectory1,
   target: Option <ObjectHandle>,
 }
 
@@ -233,11 +253,11 @@ fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectH
   query (accessor, & object.varying).destroyed;
 }
 
-fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle) {
+fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
   query (accessor, & object.varying).team != query (accessor, & other.varying).team
 }
 
-fn get_detector <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->DataHandle <Detector> {
+fn get_detector <A: Accessor <Steward = Steward>>(accessor: &A)->DataHandle <Detector> {
   query (accessor, & accessor.globals().detector)
 }
 
@@ -283,11 +303,11 @@ fn radius (varying: & ObjectVarying)->Coordinate {
 define_event! {
   struct BuildGuild {palace: ObjectHandle},
   PersistentTypeId(0x3995cd28e2829c09),
-  fn execute (&self, accessor: Accessor) {
+  fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.palace, | varying | {
       varying.gold.add (accessor.now(), - 100) ;
     });
-    let varying = query (accessor, palace.varying) ;
+    let varying = query (accessor, &self.palace.varying) ;
     create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
       LinearTrajectory2::constant (accessor.now(), varying.trajectory.evaluate (accessor.now()) + Vector2::new (0, 10*STRIDE)),
       ObjectType::Guild (Guild {gold: LinearTrajectory::new (0, 10)}),
@@ -300,14 +320,14 @@ define_event! {
 define_event! {
   struct Think {ranger: ObjectHandle},
   PersistentTypeId(0xe35485dcd0277599),
-  fn execute (&self, accessor: Accessor) {
+  fn execute (&self, accessor: &mut Accessor) {
     let attack = None;
     modify_object (accessor, & self.ranger, | varying | {
-      varying.thoughts.add (accessor.now(), - 100) ;
-      for object in Detector::objects_near_box (accessor, get_detector (accessor), BoundingBox::centered (varying.trajectory.evaluate (accessor.now()), RANGER_RANGE), & self.ranger) {
+      match varying.object_type {Ranger (ranger) => ranger,_=> unreachable!()}.thoughts.add (accessor.now(), - 100) ;
+      for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (varying.trajectory.evaluate (*accessor.now())), RANGER_RANGE as u64), Some (& self.ranger)) {
         if is_enemy (accessor, & self.ranger, & object) {
           if distance < RANGER_RANGE {
-            attack = object.clone();
+            attack = Some (object.clone());
           }
         }
       }
@@ -328,14 +348,13 @@ struct Tile {
   variable: u32,
 }
 
-#[derive (Serialize, Deserialize, Debug)]
 struct Game {
   steward: Steward,
   now: Time,
   last_ui_time: f64,
 }
 
-js_serializable!(Game);
+//js_serializable!(Game);
 
 fn display_location (location: Vector2 <f64>)->Vector2 <f64> {
   Vector2::new (
@@ -369,12 +388,14 @@ fn draw_tile (location: Vector2 <usize>, tile: & Tile) {
   }
 }
 
-fn draw_game <A: EventAccessor <Steward = Steward>>(accessor: &A) {
+fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
   }
-  for handle in Detector::objects_near_box (accessor, get_detector (accessor), BoundingBox::centered (Vector2::new (0, 0), PALACE_DISTANCE*2), None) {
-    
+  for handle in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered ([0, 0], PALACE_DISTANCE as u64*2), None) {
+    js! {
+      context.clearRect (0, 0, canvas.width, canvas.height);
+    }
   }
 }
 
