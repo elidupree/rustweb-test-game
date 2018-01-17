@@ -30,11 +30,6 @@ use self::collisions::simple_grid::{SimpleGridDetector};
 
 use time_steward::support::rounding_error_tolerant_math::Range;
 
-fn modify<A: EventAccessor <Steward = Steward>, T: QueryResult, F: FnOnce(&mut T)>(accessor: &A, cell: &DataTimelineCell <SimpleTimeline <T, Steward>>, f: F) {
-  let mut data = query (accessor, cell);
-  (f)(&mut data);
-  set (accessor, cell, data);
-}
 
 macro_rules! define_event {
   (
@@ -58,6 +53,15 @@ impl Event for $Struct {
   }
 }
 
+macro_rules! unwrap_object_type {
+  (
+    $varying: expr, $Variant: ident
+  ) => {
+match $varying.object_type {ObjectType::$Variant (ref mut value) => value,_=> unreachable!()}
+  }
+}
+
+
 type Timeline <T> = DataTimelineCell <SimpleTimeline <T, Steward>>;
 fn new_timeline <T: QueryResult> ()->Timeline <T> {DataTimelineCell::new (SimpleTimeline::new())}
 type Detector = SimpleGridDetector <Space>;
@@ -74,108 +78,6 @@ const PALACE_RADIUS: Coordinate = STRIDE*20;
 const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
 const RANGER_RANGE: Coordinate = STRIDE*20;
-
-fn distance_squared (first: Vector, second: Vector)->Range {
-  Range::exactly (second [0] - first [0])*Range::exactly (second [0] - first [0])
-  + Range::exactly (second [1] - first [1])*Range::exactly (second [1] - first [1])
-}
-fn distance (first: Vector, second: Vector)->Range {
-  distance_squared (first, second).sqrt().unwrap()
-}
-fn normalized_to (mut vector: Vector, length: Coordinate)->Vector {
-  while vector [0].abs() > (1<<10) || vector [1].abs() > (1<<10) { vector /= 2; }
-  vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
-}
-fn random_vector<G: Rng> (generator: &mut G, length: Coordinate)->Vector {
-  loop {
-    let vector = Vector::new (
-      generator.gen_range (- length, length+1),
-      generator.gen_range (- length, length+1),);
-    let test_length = distance(vector, Vector::new (0, 0)).max();
-    if test_length <= length && test_length*2 >= length {
-      return normalized_to (vector, length);
-    }
-  }
-}
-
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-struct LinearTrajectory <V> {
-  origin: Time,
-  position: V,
-  velocity: V,
-}
-
-impl <V> LinearTrajectory <V>
-where V: Copy + Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
-  fn update (&mut self, time: Time) {
-    self.position = self.evaluate (time) ;
-    self.origin = time;
-  }
-  fn add (&mut self, time: Time, added: V) {
-    self.update (time) ;
-    self.position += added;
-  }
-  fn add_velocity (&mut self, time: Time, added: V) {
-    self.update (time) ;
-    self.velocity += added;
-  }
-  fn set_velocity (&mut self, time: Time, added: V) {
-    self.update (time) ;
-    self.velocity = added;
-  }
-  fn evaluate (&self, time: Time)->V {
-    self.position + self.velocity*(time - self.origin)
-  }
-  fn new (time: Time, position: V, velocity: V)->Self {
-    LinearTrajectory {origin: time, position: position, velocity: velocity}
-  }
-  
-}
-
-type LinearTrajectory1 = LinearTrajectory <Coordinate>;
-type LinearTrajectory2 = LinearTrajectory <Vector>;
-
-impl LinearTrajectory1 {
-  fn when_reaches (&self, now: Time, amount: Coordinate)->Option <Time> {
-    if self.evaluate (now) >= amount {Some (now)}
-    else if self.velocity <= 0 {None}
-    else {Some (self.origin + ((amount - self.position) + (self.velocity-1))/self.velocity)}
-  }
-  fn constant (time: Time, position: Coordinate)->Self {
-    LinearTrajectory {origin: time, position: position, velocity: 0}
-  }
-}
-impl LinearTrajectory2 {
-  fn when_escapes (&self, now: Time, bounds: [[Coordinate; 2]; 2])->Option <Time> {
-    bounds.iter().enumerate().flat_map (| (dimension, bounds) |
-      bounds.iter().enumerate().filter_map (move | (direction, bound) | {
-        if direction == 0 {
-          LinearTrajectory1::new (self.origin, -self.position [dimension], -self.velocity [dimension]).when_reaches (now, (-bound) + 1)
-        }
-        else {
-          LinearTrajectory1::new (self.origin, self.position [dimension], self.velocity [dimension]).when_reaches (now, bound + 1)
-        }
-      })
-    ).min()
-  }
-  fn constant (time: Time, position: Vector)->Self {
-    LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
-  }
-}
-
-
-
-
-fn to_collision_space (coordinate: Coordinate)->collisions::Coordinate {
-  (coordinate as collisions::Coordinate).wrapping_sub(1u64 << 63)
-}
-fn from_collision_space (coordinate: collisions::Coordinate)->Coordinate {
-  (coordinate.wrapping_add(1u64 << 63)) as Coordinate
-}
-
-fn to_collision_vector (vector: Vector)->[collisions::Coordinate; 2] {
-  Array::from_fn (| dimension | to_collision_space (vector [dimension]))
-}
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -284,13 +186,6 @@ struct Ranger {
   target: Option <ObjectHandle>,
 }
 
-macro_rules! unwrap_object_type {
-  (
-    $varying: expr, $Variant: ident
-  ) => {
-match $varying.object_type {ObjectType::$Variant (ref mut value) => value,_=> unreachable!()}
-  }
-}
 
 
 fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, team: usize, trajectory: LinearTrajectory2, object_type: ObjectType) {
@@ -325,10 +220,6 @@ fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectH
 
 fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
   query (accessor, & object.varying).team != query (accessor, & other.varying).team
-}
-
-fn get_detector <A: Accessor <Steward = Steward>>(accessor: &A)->DataHandle <Detector> {
-  query (accessor, & accessor.globals().detector)
 }
 
 
@@ -502,8 +393,7 @@ fn main_loop (time: f64, mut game: Game) {
 
 fn main() {
   stdweb::initialize();
-  
-    js! {
+  js! {
     var canvas = window.canvas = document.createElement ("canvas");
     canvas.setAttribute ("width", 600);
     canvas.setAttribute ("height", 600);
@@ -518,4 +408,131 @@ fn main() {
   web::window().request_animation_frame (move | time | main_loop (time, game));
 
   stdweb::event_loop();
+}
+
+
+// ##########################################
+// ######  annoying abstraction stuff #######
+// ##########################################
+// 
+// everything below this line is either general-use support features or annoying boilerplate.
+// A lot of it should be defined, in one form or another, in TimeSteward support libraries,
+// rather than this game specifically.
+//
+// define_event! and unwrap_object_type! should also be down here,
+// they just can't because macros have ordering.
+// 
+// Maybe most of this could be put in a separate file if I don't move it into TimeSteward.
+
+fn get_detector <A: Accessor <Steward = Steward>>(accessor: &A)->DataHandle <Detector> {
+  query (accessor, & accessor.globals().detector)
+}
+
+fn modify<A: EventAccessor <Steward = Steward>, T: QueryResult, F: FnOnce(&mut T)>(accessor: &A, cell: &DataTimelineCell <SimpleTimeline <T, Steward>>, f: F) {
+  let mut data = query (accessor, cell);
+  (f)(&mut data);
+  set (accessor, cell, data);
+}
+
+
+fn distance_squared (first: Vector, second: Vector)->Range {
+  Range::exactly (second [0] - first [0])*Range::exactly (second [0] - first [0])
+  + Range::exactly (second [1] - first [1])*Range::exactly (second [1] - first [1])
+}
+fn distance (first: Vector, second: Vector)->Range {
+  distance_squared (first, second).sqrt().unwrap()
+}
+fn normalized_to (mut vector: Vector, length: Coordinate)->Vector {
+  while vector [0].abs() > (1<<10) || vector [1].abs() > (1<<10) { vector /= 2; }
+  vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
+}
+fn random_vector<G: Rng> (generator: &mut G, length: Coordinate)->Vector {
+  loop {
+    let vector = Vector::new (
+      generator.gen_range (- length, length+1),
+      generator.gen_range (- length, length+1),);
+    let test_length = distance(vector, Vector::new (0, 0)).max();
+    if test_length <= length && test_length*2 >= length {
+      return normalized_to (vector, length);
+    }
+  }
+}
+
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+struct LinearTrajectory <V> {
+  origin: Time,
+  position: V,
+  velocity: V,
+}
+
+impl <V> LinearTrajectory <V>
+where V: Copy + Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
+  fn update (&mut self, time: Time) {
+    self.position = self.evaluate (time) ;
+    self.origin = time;
+  }
+  fn add (&mut self, time: Time, added: V) {
+    self.update (time) ;
+    self.position += added;
+  }
+  fn add_velocity (&mut self, time: Time, added: V) {
+    self.update (time) ;
+    self.velocity += added;
+  }
+  fn set_velocity (&mut self, time: Time, added: V) {
+    self.update (time) ;
+    self.velocity = added;
+  }
+  fn evaluate (&self, time: Time)->V {
+    self.position + self.velocity*(time - self.origin)
+  }
+  fn new (time: Time, position: V, velocity: V)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: velocity}
+  }
+  
+}
+
+type LinearTrajectory1 = LinearTrajectory <Coordinate>;
+type LinearTrajectory2 = LinearTrajectory <Vector>;
+
+impl LinearTrajectory1 {
+  fn when_reaches (&self, now: Time, amount: Coordinate)->Option <Time> {
+    if self.evaluate (now) >= amount {Some (now)}
+    else if self.velocity <= 0 {None}
+    else {Some (self.origin + ((amount - self.position) + (self.velocity-1))/self.velocity)}
+  }
+  fn constant (time: Time, position: Coordinate)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: 0}
+  }
+}
+impl LinearTrajectory2 {
+  fn when_escapes (&self, now: Time, bounds: [[Coordinate; 2]; 2])->Option <Time> {
+    bounds.iter().enumerate().flat_map (| (dimension, bounds) |
+      bounds.iter().enumerate().filter_map (move | (direction, bound) | {
+        if direction == 0 {
+          LinearTrajectory1::new (self.origin, -self.position [dimension], -self.velocity [dimension]).when_reaches (now, (-bound) + 1)
+        }
+        else {
+          LinearTrajectory1::new (self.origin, self.position [dimension], self.velocity [dimension]).when_reaches (now, bound + 1)
+        }
+      })
+    ).min()
+  }
+  fn constant (time: Time, position: Vector)->Self {
+    LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
+  }
+}
+
+
+
+
+fn to_collision_space (coordinate: Coordinate)->collisions::Coordinate {
+  (coordinate as collisions::Coordinate).wrapping_sub(1u64 << 63)
+}
+fn from_collision_space (coordinate: collisions::Coordinate)->Coordinate {
+  (coordinate.wrapping_add(1u64 << 63)) as Coordinate
+}
+
+fn to_collision_vector (vector: Vector)->[collisions::Coordinate; 2] {
+  Array::from_fn (| dimension | to_collision_space (vector [dimension]))
 }
