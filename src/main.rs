@@ -1,4 +1,5 @@
 #![feature (macro_vis_matcher)]
+#![recursion_limit="128"]
 
 #[macro_use]
 extern crate stdweb;
@@ -517,8 +518,12 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
-      context.strokeStyle = "rgba(0,0,0,255)";
+      context.strokeStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",1.0)";
       context.stroke();
+      if (@{varying.team == 1}) {
+        context.fillStyle = "rgba(255,0,0,0.2)";
+        context.fill();
+      }
     }
   }
 }
