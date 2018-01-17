@@ -293,6 +293,13 @@ fn radius (varying: & ObjectVarying)->Coordinate {
     ObjectType::Arrow => STRIDE/5,
   }
 }
+fn is_building(varying: & ObjectVarying)->bool {
+  match varying.object_type {
+    ObjectType::Palace => true,
+    ObjectType::Guild => true,
+    _=>false,
+  }
+}
 fn action_cost (action: & Action)->Coordinate {
   match action.action_type {
     ActionType::Think => 10*SECOND,
@@ -349,7 +356,7 @@ define_event! {
           let position = varying.trajectory.evaluate (*accessor.now());
           for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.object)) {
             let other_varying = query (accessor, & other.varying);
-            if is_enemy (accessor, & self.object, & other) && match other_varying.object_type {ObjectType::Ranger => false,_=> true} {
+            if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
               let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
               //println!("vel {:?}", (&new_velocity));
