@@ -6,6 +6,7 @@ extern crate stdweb;
 extern crate serde_derive;
 extern crate nalgebra;
 extern crate array_ext;
+extern crate rand;
 
 extern crate time_steward;
 
@@ -15,6 +16,7 @@ use std::ops::{Add, AddAssign, Mul};
 use stdweb::web;
 use array_ext::*;
 use nalgebra::{Vector2};
+use rand::Rng;
 
 
 use time_steward::{DeterministicRandomId};
@@ -70,7 +72,7 @@ const STRIDE: Coordinate = SECOND << 8;
 const PALACE_RADIUS: Coordinate = STRIDE*20;
 const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
-const RANGER_RANGE: Coordinate = STRIDE*10;
+const RANGER_RANGE: Coordinate = STRIDE*20;
 
 fn distance_squared (first: Vector, second: Vector)->Range {
   Range::exactly (second [0] - first [0])*Range::exactly (second [0] - first [0])
@@ -79,8 +81,20 @@ fn distance_squared (first: Vector, second: Vector)->Range {
 fn distance (first: Vector, second: Vector)->Range {
   distance_squared (first, second).sqrt().unwrap()
 }
-fn normalized_to (vector: Vector, length: Coordinate)->Vector {
+fn normalized_to (mut vector: Vector, length: Coordinate)->Vector {
+  while vector [0].abs() > (1<<10) || vector [1].abs() > (1<<10) { vector /= 2; }
   vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
+}
+fn random_vector<G: Rng> (generator: &mut G, length: Coordinate)->Vector {
+  loop {
+    let vector = Vector::new (
+      generator.gen_range (- length, length+1),
+      generator.gen_range (- length, length+1),);
+    let test_length = distance(vector, Vector::new (0, 0)).max();
+    if test_length <= length && test_length*2 >= length {
+      return normalized_to (vector, length);
+    }
+  }
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -378,7 +392,7 @@ define_event! {
     });
     let mut varying = query (accessor, &self.palace.varying) ;
     create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
-      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + Vector2::new (0, PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
+      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
       ObjectType::Guild (Guild {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
     );
     println!("{:?}", (unwrap_object_type!(varying, Palace)));
@@ -395,7 +409,7 @@ define_event! {
     });
     let varying = query (accessor, &self.guild.varying) ;
     create_object (accessor, & self.guild, 0x91db5029ba8b0a4e,
-      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + Vector2::new (0, GUILD_RADIUS + 2*STRIDE)),
+      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
       ObjectType::Ranger (Ranger {thoughts: LinearTrajectory1::new (*accessor.now(), 0, 10), target: None}),
     );
   }
@@ -414,7 +428,7 @@ define_event! {
       let position = varying.trajectory.evaluate (*accessor.now());
       for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& self.ranger)) {
         if is_enemy (accessor, & self.ranger, & object) {
-          if distance_squared (position, query (accessor, & object.varying).trajectory.evaluate (*accessor.now())) <= RANGER_RANGE*RANGER_RANGE {
+          if distance_squared (position, query (accessor, & object.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
             attack = Some (object.clone());
           }
         }
@@ -422,8 +436,9 @@ define_event! {
       
       if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
         for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
-          if is_enemy (accessor, & self.ranger, & object) {
-            let other_position = query (accessor, & object.varying).trajectory.evaluate (*accessor.now());
+          let other_varying = query (accessor, & object.varying);
+          if is_enemy (accessor, & self.ranger, & object) && match other_varying.object_type {ObjectType::Ranger (_) => false,_=> true} {
+            let other_position = other_varying.trajectory.evaluate (*accessor.now());
             unwrap_object_type!(varying, Ranger).target = Some (object);
             let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
             println!("vel {:?}", (&new_velocity));
@@ -496,7 +511,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     let scale = STRIDE as f64/2.0;
     let varying = query (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
-    let center = Vector2::new (center [0] as f64, center [1] as f64)/scale;
+    let center = Vector2::new (center [0] as f64 + PALACE_DISTANCE as f64, center [1] as f64 + PALACE_DISTANCE as f64*1.5)/scale;
     let object_radius = radius (& varying) as f64/scale ;
     println!("{:?}", (varying.trajectory, center, object_radius));
     js! {
