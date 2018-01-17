@@ -271,6 +271,8 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
           if is_enemy (accessor, & other, & object) {
             if distance_squared (position, query (accessor, & other.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
               result = Some (Action {action_type: ActionType::Shoot, target: Some(other.clone()),..Default::default()});
+              varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
+              varying.target = None;
             }
           }
         }
