@@ -18,9 +18,9 @@ use nalgebra::{Vector2};
 
 
 use time_steward::{DeterministicRandomId};
-use time_steward::{PersistentTypeId, ListedType, PersistentlyIdentifiedType, DataTimelineCellTrait, QueryResult, Basics as BasicsTrait};
+use time_steward::{PersistentTypeId, ListedType, PersistentlyIdentifiedType, DataTimelineCellTrait, QueryResult, EventHandleTrait, Basics as BasicsTrait};
 pub use time_steward::stewards::{simple_full as steward_module};
-use steward_module::{TimeSteward, Event, DataHandle, DataTimelineCell, Accessor, EventAccessor, FutureCleanupAccessor, simple_timeline, bbox_collision_detection_2d as collisions};
+use steward_module::{TimeSteward, ConstructibleTimeSteward, Event, DataHandle, DataTimelineCell, Accessor, EventAccessor, FutureCleanupAccessor, simple_timeline, bbox_collision_detection_2d as collisions};
 use simple_timeline::{SimpleTimeline, query, set};
 use self::collisions::{NumDimensions, Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
@@ -83,7 +83,7 @@ struct LinearTrajectory <V> {
 }
 
 impl <V> LinearTrajectory <V>
-where V: Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
+where V: Copy + Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
   fn update (&mut self, time: Time) {
     self.position = self.evaluate (time) ;
     self.origin = time;
@@ -123,6 +123,18 @@ impl LinearTrajectory1 {
   }
 }
 impl LinearTrajectory2 {
+  fn when_escapes (&self, now: Time, bounds: [[Coordinate; 2]; 2])->Option <Time> {
+    bounds.iter().enumerate().flat_map (| (dimension, bounds) |
+      bounds.iter().enumerate().filter_map (move | (direction, bound) | {
+        if direction == 0 {
+          LinearTrajectory1::new (self.origin, -self.position [dimension], -self.velocity [dimension]).when_reaches (now, (-bound) + 1)
+        }
+        else {
+          LinearTrajectory1::new (self.origin, self.position [dimension], self.velocity [dimension]).when_reaches (now, bound + 1)
+        }
+      })
+    ).min()
+  }
   fn constant (time: Time, position: Vector)->Self {
     LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
   }
@@ -176,7 +188,7 @@ impl collisions::Space for Space {
   }
   fn when_escapes<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, bounds: BoundingBox)->Option<<<Self::Steward as TimeSteward>::Basics as BasicsTrait>::Time> {
     let varying = query (accessor, & object.varying);
-    varying.trajectory.approximately_when_escapes (
+    varying.trajectory.when_escapes (
       accessor.now().clone(),
       [
         [from_collision_space (bounds.bounds [0] [0]) + radius (&varying), from_collision_space (bounds.bounds [0] [1]) - radius (&varying)],
@@ -199,7 +211,7 @@ type Steward = steward_module::Steward <Basics>;
 type EventHandle = <Steward as TimeSteward>::EventHandle;
 
 #[derive (Serialize, Deserialize, Debug)]
-struct Globals {
+pub struct Globals {
   detector: Timeline <DataHandle <Detector>>,
 }
 
@@ -212,7 +224,7 @@ enum ObjectType {
 
 
 #[derive (Clone, Serialize, Deserialize, Debug)]
-struct Object {
+pub struct Object {
   id: DeterministicRandomId,
   varying: Timeline <ObjectVarying>,
 }
@@ -252,18 +264,26 @@ macro_rules! unwrap_object_type {
   (
     $varying: expr, $Variant: ident
   ) => {
-match $varying.object_type {ObjectType::$Variant (value) => value,_=> unreachable!()}
+match $varying.object_type {ObjectType::$Variant (ref mut value) => value,_=> unreachable!()}
   }
 }
 
 
-fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, trajectory: LinearTrajectory2, object_type: ObjectType) {
-  let created = accessor.new_handle (Object {id: DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), varying: new_timeline()});
+fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, team: usize, trajectory: LinearTrajectory2, object_type: ObjectType) {
+  let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
   set (accessor, & created.varying, ObjectVarying {
-    object_type: object_type, trajectory: trajectory, team: query (accessor, & source_object.varying).team, detector_data: None, prediction: None, destroyed: false,
+    object_type: object_type, trajectory: trajectory, team: team, detector_data: None, prediction: None, destroyed: false,
   });
-  Detector::insert (accessor, & get_detector (accessor), & created, Some (source_object));
+  Detector::insert (accessor, & get_detector (accessor), & created, source_object);
   object_changed (accessor, & created);
+}
+
+fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, trajectory: LinearTrajectory2, object_type: ObjectType) {
+  create_object_impl (accessor, Some (source_object),
+    DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), 
+    query (accessor, & source_object.varying).team, 
+    trajectory,
+    object_type) ;
 }
 
 
@@ -275,8 +295,8 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   Detector::remove (accessor, & get_detector (accessor), object);
 }
 
-fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  query (accessor, & object.varying).destroyed;
+fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->bool {
+  query (accessor, & object.varying).destroyed
 }
 
 fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
@@ -300,19 +320,19 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   modify (accessor, & object.varying, | varying | {
     let iterator = iter::empty().chain (
       match varying.object_type {
-        ObjectType::Palace (palace) => {
+        ObjectType::Palace (ref palace) => {
           iter::once (accessor.create_prediction (palace.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, BuildGuild {palace: object.clone()}))
         },
-        ObjectType::Guild (guild) => {
+        ObjectType::Guild (ref guild) => {
           iter::once (accessor.create_prediction (guild.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, RecruitRanger {guild: object.clone()}))
         },
-        ObjectType::Ranger (ranger) => {
+        ObjectType::Ranger (ref ranger) => {
           iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, Think {ranger: object.clone()}))
         },
       }
     );
     
-    varying.prediction = iterator.min_by_key (| prediction | prediction.extended_time());
+    varying.prediction = iterator.min_by_key (| prediction | prediction.extended_time().clone());
   });
   Detector::changed_position (accessor, & get_detector (accessor), object);
 }
@@ -327,7 +347,20 @@ fn radius (varying: & ObjectVarying)->Coordinate {
 
 
 define_event! {
-  struct BuildGuild {palace: ObjectHandle},
+  pub struct Initialize {},
+  PersistentTypeId(0x9a633852de46827f),
+  fn execute (&self, accessor: &mut Accessor) {
+    for team in 0..2 {
+      create_object_impl (accessor, None, DeterministicRandomId::new (& 0xb2e085cd02f2f8dbu64), team,
+        LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
+        ObjectType::Palace (Palace {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
+      );
+    }
+  }
+}
+
+define_event! {
+  pub struct BuildGuild {palace: ObjectHandle},
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.palace, | varying | {
@@ -341,21 +374,44 @@ define_event! {
   }
 }
 
+define_event! {
+  pub struct RecruitRanger {guild: ObjectHandle},
+  PersistentTypeId(0x90198a81b2628f04),
+  fn execute (&self, accessor: &mut Accessor) {
+    modify_object (accessor, & self.guild, | varying | {
+      unwrap_object_type!(varying, Guild).gold.add (*accessor.now(), - 100) ;
+    });
+    let varying = query (accessor, &self.guild.varying) ;
+    create_object (accessor, & self.guild, 0x91db5029ba8b0a4e,
+      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + Vector2::new (0, GUILD_RADIUS + 2*STRIDE)),
+      ObjectType::Ranger (Ranger {thoughts: LinearTrajectory1::new (*accessor.now(), 0, 10), target: None}),
+    );
+  }
+}
+
 
 
 define_event! {
-  struct Think {ranger: ObjectHandle},
+  pub struct Think {ranger: ObjectHandle},
   PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    let attack = None;
+    let mut attack = None;
     modify_object (accessor, & self.ranger, | varying | {
-      
+      //let ranger =
       unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 100) ;
       let position = varying.trajectory.evaluate (*accessor.now());
       for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& self.ranger)) {
         if is_enemy (accessor, & self.ranger, & object) {
           if distance_squared (position, query (accessor, & object.varying).trajectory.evaluate (*accessor.now())) <= RANGER_RANGE*RANGER_RANGE {
             attack = Some (object.clone());
+          }
+        }
+      }
+      
+      if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
+        for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
+          if is_enemy (accessor, & self.ranger, & object) {
+            unwrap_object_type!(varying, Ranger).target = Some (object);
           }
         }
       }
@@ -465,8 +521,9 @@ fn main() {
   }
   println!("uuu");
 
-  
-  let game = Game {tiles: Array::from_fn (|_| Array::from_fn (|_| Tile {variable: 0}))};
+  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
+  steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
+  let game = Game {steward: steward, now: 1, last_ui_time: 0.0};
   
   web::window().request_animation_frame (move | time | main_loop (time, game));
 
