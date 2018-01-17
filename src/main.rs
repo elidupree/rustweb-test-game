@@ -456,52 +456,10 @@ define_event! {
 
 
 
-
-
-
-#[derive (Serialize, Deserialize, Debug)]
-struct Tile {
-  variable: u32,
-}
-
 struct Game {
   steward: Steward,
   now: Time,
   last_ui_time: f64,
-}
-
-//js_serializable!(Game);
-
-fn display_location (location: Vector2 <f64>)->Vector2 <f64> {
-  Vector2::new (
-    105.0 + location [0]*10.0 - location [1]*10.0,
-    5.0 + location [0]*5.0 + location [1]*5.0,
-  )
-}
-
-fn draw_tile (location: Vector2 <usize>, tile: & Tile) {
-  let center = Vector2::new (location [0] as f64, location [1] as f64);
-  let corners = [
-    display_location (center + Vector2::new (0.5, 0.5)),
-    display_location (center + Vector2::new (0.5, -0.5)),
-    display_location (center + Vector2::new (-0.5, -0.5)),
-    display_location (center + Vector2::new (-0.5, 0.5)),
-  ];
-  js!{
-    context.beginPath();
-    context.moveTo(@{corners [3] [0]},@{corners [3] [1]});
-  }
-  for corner in corners.iter() {
-    js!{
-      context.lineTo(@{corner [0]},@{corner [1]});
-    }
-  }
-  js!{
-    context.strokeStyle = "rgba(0,0,0,255)";
-    context.stroke();
-    context.fillStyle = "rgba(255,0,0,"+@{tile.variable as f64/23.0}+")";
-    context.fill ();
-  }
 }
 
 fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
@@ -539,35 +497,20 @@ fn main_loop (time: f64, mut game: Game) {
   draw_game (& snapshot);
   game.steward.forget_before (& game.now);
   
-  /*
-  //game.variable += 1;
-  js! {
-    context.clearRect (0, 0, canvas.width, canvas.height);
-  }
-  for (first, whatever) in game.tiles.iter_mut().enumerate() {
-    for (second, tile) in whatever.iter_mut().enumerate() {
-      draw_tile (Vector2::new (first, second), tile);
-      tile.variable = (tile.variable + first as u32) % 23;
-    }
-  }*/
   web::window().request_animation_frame (move | time | main_loop (time, game));
 }
 
 fn main() {
   stdweb::initialize();
-
-  //let message = "Hello!";
-  js! {
+  
+    js! {
     var canvas = window.canvas = document.createElement ("canvas");
     canvas.setAttribute ("width", 600);
     canvas.setAttribute ("height", 600);
     document.body.appendChild (canvas);
     window.context = canvas.getContext ("2d");
-      
-    //alert( @{message} );
   }
-  println!("uuu");
-
+  
   let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
   steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
   let game = Game {steward: steward, now: 1, last_ui_time: 0.0};
