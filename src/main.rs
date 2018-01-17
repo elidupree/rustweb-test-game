@@ -138,6 +138,7 @@ enum ObjectType {
   Palace,
   Guild,
   Ranger,
+  Arrow,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -276,7 +277,7 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         if result.is_none() {result = Some(Action {action_type: ActionType::Think,..Default::default()})}
         result
       },
-      
+      ObjectType::Arrow => { None },
     };
     varying.action_progress.set (*accessor.now(), 0);
   });
@@ -287,6 +288,7 @@ fn radius (varying: & ObjectVarying)->Coordinate {
     ObjectType::Palace => PALACE_RADIUS,
     ObjectType::Guild => GUILD_RADIUS,
     ObjectType::Ranger => STRIDE/2,
+    ObjectType::Arrow => STRIDE/5,
   }
 }
 fn action_cost (action: & Action)->Coordinate {
@@ -359,7 +361,18 @@ define_event! {
 
       },
       ActionType::Shoot => {
-        destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+        let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
+        //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+        let other_varying = query (accessor, & target.varying);
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let other_position = other_varying.trajectory.evaluate (*accessor.now());
+        let new_velocity = normalized_to (other_position - position, 100*STRIDE/SECOND);
+        create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
+          object_type: ObjectType::Arrow,
+          team: varying.team,
+          trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
+          .. Default::default()
+        });
       },
     }
     
@@ -378,37 +391,7 @@ define_event! {
 }
 
 
-/*
-define_event! {
-  pub struct Think {ranger: ObjectHandle},
-  PersistentTypeId(0xe35485dcd0277599),
-  fn execute (&self, accessor: &mut Accessor) {
-    let mut attack = None;
-    modify_object (accessor, & self.ranger, | varying | {
-      //let ranger =
-      unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 10*SECOND) ;
-            
-      if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
-        for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
-          let other_varying = query (accessor, & object.varying);
-          if is_enemy (accessor, & self.ranger, & object) && match other_varying.object_type {ObjectType::Ranger (_) => false,_=> true} {
-            let other_position = other_varying.trajectory.evaluate (*accessor.now());
-            unwrap_object_type!(varying, Ranger).target = Some (object);
-            let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
-            //println!("vel {:?}", (&new_velocity));
-            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
-          }
-        }
-      }
-    });
-    if let Some(victim) = attack {
-      destroy_object (accessor, & victim);
-    }
-  }
-}
 
-
-*/
 struct Game {
   steward: Steward,
   now: Time,
@@ -599,17 +582,20 @@ impl LinearTrajectory2 {
     displacement.velocity -= other.velocity;
     //let polynomial = time_steward::support::rounding_error_tolerant_math::multiply_polynomials (
     //  &[Range::exactly (displacement.position[0]), Range::exactly (displacement.velocity [0])
-    time_steward::support::rounding_error_tolerant_math::roots (& [
+    let polynomial = [
       Range::exactly (displacement.position [0])*displacement.position [0] +
-      Range::exactly (displacement.position [1])*displacement.position [1] - Range::exactly (distance),
+      Range::exactly (displacement.position [1])*displacement.position [1] - Range::exactly (distance)*distance,
       Range::exactly (displacement.position [0])*displacement.velocity[0]*2 +
       Range::exactly (displacement.position [1])*displacement.velocity[1]*2,
       Range::exactly (displacement.velocity [0])*displacement.velocity[0] +
       Range::exactly (displacement.velocity [1])*displacement.velocity[1],
-      ],
-      now,
+      ];
+    let result = time_steward::support::rounding_error_tolerant_math::roots (& polynomial,
+      0,
       Time::max_value(),
-    ).first().map (| front | front.max())
+    ).first().and_then (| front | front.max().checked_add(now));
+    //println!("{:?}", (displacement, polynomial, distance, result));
+    result
   }
   fn constant (time: Time, position: Vector)->Self {
     LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
