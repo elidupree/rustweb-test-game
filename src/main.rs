@@ -350,8 +350,9 @@ define_event! {
   pub struct Initialize {},
   PersistentTypeId(0x9a633852de46827f),
   fn execute (&self, accessor: &mut Accessor) {
+    set (accessor, &accessor.globals().detector, SimpleGridDetector::new (accessor, Space, (STRIDE*50) as collisions::Coordinate));
     for team in 0..2 {
-      create_object_impl (accessor, None, DeterministicRandomId::new (& 0xb2e085cd02f2f8dbu64), team,
+      create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)), team,
         LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
         ObjectType::Palace (Palace {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
       );
@@ -476,9 +477,18 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
   }
-  for handle in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered ([0, 0], PALACE_DISTANCE as u64*2), None) {
+  for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None) {
+    let scale = STRIDE as f64/2.0;
+    let varying = query (accessor, & object.varying);
+    let center = varying.trajectory.evaluate (*accessor.now());
+    let center = Vector2::new (center [0] as f64, center [1] as f64)/scale;
+    let object_radius = radius (& varying) as f64/scale ;
+    println!("{:?}", (varying.object_type, varying.trajectory, center, object_radius));
     js! {
-      context.clearRect (0, 0, canvas.width, canvas.height);
+      context.beginPath();
+      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
+      context.strokeStyle = "rgba(0,0,0,255)";
+      context.stroke();
     }
   }
 }
@@ -514,6 +524,8 @@ fn main() {
   //let message = "Hello!";
   js! {
     var canvas = window.canvas = document.createElement ("canvas");
+    canvas.setAttribute ("width", 600);
+    canvas.setAttribute ("height", 600);
     document.body.appendChild (canvas);
     window.context = canvas.getContext ("2d");
       
