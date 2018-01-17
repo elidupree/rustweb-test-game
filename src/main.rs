@@ -53,14 +53,6 @@ impl Event for $Struct {
   }
 }
 
-macro_rules! unwrap_object_type {
-  (
-    $varying: expr, $Variant: ident
-  ) => {
-match $varying.object_type {ObjectType::$Variant (ref mut value) => value,_=> unreachable!()}
-  }
-}
-
 
 type Timeline <T> = DataTimelineCell <SimpleTimeline <T, Steward>>;
 fn new_timeline <T: QueryResult> ()->Timeline <T> {DataTimelineCell::new (SimpleTimeline::new())}
@@ -129,7 +121,7 @@ pub struct Basics {}
 impl BasicsTrait for Basics {
   type Time = Time;
   type Globals = Globals;
-  type Types = (ListedType <BuildGuild>);
+  type Types = (ListedType <CompleteAction>);
   const MAX_ITERATION: u32 = 12;
 }
 
@@ -143,9 +135,25 @@ pub struct Globals {
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 enum ObjectType {
-  Palace (Palace),
-  Guild (Guild),
-  Ranger (Ranger),
+  Palace,
+  Guild,
+  Ranger,
+}
+
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+enum ActionType {
+  BuildGuild,
+  RecruitRanger,
+  Think,
+  Shoot,
+}
+
+impl Default for ActionType {fn default()->Self {ActionType::Think}}
+
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+struct Action {
+  action_type: ActionType,
+  target: Option <ObjectHandle>,
 }
 
 
@@ -165,44 +173,39 @@ struct ObjectVarying {
   trajectory: LinearTrajectory2,
   detector_data: Option <DetectorData>,
   team: usize,
+  action: Option <Action>,
+  action_progress: LinearTrajectory1,
+  target: Option <ObjectHandle>,
   prediction: Option <EventHandle>,
   destroyed: bool,
 }
 
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-struct Palace {
-  gold: LinearTrajectory1,
-}
-
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-struct Guild {
-  gold: LinearTrajectory1,
-}
-
-
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-struct Ranger {
-  thoughts: LinearTrajectory1,
-  target: Option <ObjectHandle>,
-}
+impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
+  object_type: ObjectType::Palace,
+  trajectory: LinearTrajectory2::constant (0, Vector::new (0, 0)),
+  detector_data: None,
+  team: 0,
+  action: None,
+  action_progress: LinearTrajectory1::new (0, 0, 10),
+  target: None,
+  prediction: None,
+  destroyed: false,
+}}}
 
 
 
-fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, team: usize, trajectory: LinearTrajectory2, object_type: ObjectType) {
+fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, varying: ObjectVarying) {
   let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
-  set (accessor, & created.varying, ObjectVarying {
-    object_type: object_type, trajectory: trajectory, team: team, detector_data: None, prediction: None, destroyed: false,
-  });
+  set (accessor, & created.varying, varying);
   Detector::insert (accessor, & get_detector (accessor), & created, source_object);
-  object_changed (accessor, & created);
+  choose_action (accessor, & created) ;
+  //object_changed (accessor, & created);
 }
 
-fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, trajectory: LinearTrajectory2, object_type: ObjectType) {
+fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, varying: ObjectVarying) {
   create_object_impl (accessor, Some (source_object),
     DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), 
-    query (accessor, & source_object.varying).team, 
-    trajectory,
-    object_type) ;
+    varying) ;
 }
 
 
@@ -233,30 +236,64 @@ fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVar
 fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
   modify (accessor, & object.varying, | varying | {
-    let iterator = iter::empty().chain (
-      match varying.object_type {
-        ObjectType::Palace (ref palace) => {
-          iter::once (accessor.create_prediction (palace.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, BuildGuild {palace: object.clone()}))
-        },
-        ObjectType::Guild (ref guild) => {
-          iter::once (accessor.create_prediction (guild.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, RecruitRanger {guild: object.clone()}))
-        },
-        ObjectType::Ranger (ref ranger) => {
-          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (*accessor.now(), 10*SECOND).unwrap(), id, Think {ranger: object.clone()}))
-        },
+    let mut earliest_prediction = None;
+    {
+      let mut consider = | prediction: EventHandle | {
+        if earliest_prediction.as_ref().map_or (true, | earliest: & EventHandle | prediction.extended_time() < earliest.extended_time()) {earliest_prediction = Some (prediction);}
+      };
+      if let Some (action) = varying.action.as_ref() {
+        consider (accessor.create_prediction (varying.action_progress.when_reaches (*accessor.now(), action_cost (action)).unwrap(), id, CompleteAction {object: object.clone()}));
       }
-    );
+      for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
+        if is_enemy (accessor, & object, & other) {
+          let other_varying = query (accessor, & other.varying);
+          if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
+            consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
+          }
+        }
+      }
+    };
     
-    varying.prediction = iterator.min_by_key (| prediction | prediction.extended_time().clone());
+    varying.prediction = earliest_prediction;
   });
   Detector::changed_position (accessor, & get_detector (accessor), object);
+}
+fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  modify_object (accessor, & object, | varying | {
+    varying.action = match varying.object_type.clone() {
+      ObjectType::Palace => Some(Action {action_type: ActionType::BuildGuild,..Default::default()}),
+      ObjectType::Guild => Some(Action {action_type: ActionType::RecruitRanger,..Default::default()}),
+      ObjectType::Ranger => {
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let mut result = None;
+        for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
+          if is_enemy (accessor, & other, & object) {
+            if distance_squared (position, query (accessor, & other.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
+              result = Some (Action {action_type: ActionType::Shoot, target: Some(other.clone()),..Default::default()});
+            }
+          }
+        }
+        if result.is_none() {result = Some(Action {action_type: ActionType::Think,..Default::default()})}
+        result
+      },
+      
+    };
+    varying.action_progress.set (*accessor.now(), 0);
+  });
 }
 
 fn radius (varying: & ObjectVarying)->Coordinate {
   match varying.object_type {
-    ObjectType::Palace (_) => PALACE_RADIUS,
-    ObjectType::Guild (_) => GUILD_RADIUS,
-    ObjectType::Ranger (_) => STRIDE/2,
+    ObjectType::Palace => PALACE_RADIUS,
+    ObjectType::Guild => GUILD_RADIUS,
+    ObjectType::Ranger => STRIDE/2,
+  }
+}
+fn action_cost (action: & Action)->Coordinate {
+  match action.action_type {
+    ActionType::Think => 10*SECOND,
+    ActionType::Shoot => 10*SECOND,
+    _ => 100*SECOND,
   }
 }
 
@@ -267,48 +304,81 @@ define_event! {
   fn execute (&self, accessor: &mut Accessor) {
     set (accessor, &accessor.globals().detector, SimpleGridDetector::new (accessor, Space, (STRIDE*50) as collisions::Coordinate));
     for team in 0..2 {
-      create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)), team,
-        LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
-        ObjectType::Palace (Palace {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
+      create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
+        ObjectVarying {
+          object_type: ObjectType::Palace,
+          team: team,
+          trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
+          .. Default::default()
+        },
       );
     }
   }
 }
 
 define_event! {
-  pub struct BuildGuild {palace: ObjectHandle},
+  pub struct CompleteAction {object: ObjectHandle},
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
-    modify_object (accessor, & self.palace, | varying | {
-      unwrap_object_type!(varying, Palace).gold.add (*accessor.now(), - 100*SECOND) ;
-    });
-    let mut varying = query (accessor, &self.palace.varying) ;
-    create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
-      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
-      ObjectType::Guild (Guild {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
-    );
-    println!("{:?}", (unwrap_object_type!(varying, Palace)));
-    println!("{:?}", (&varying.object_type, &varying.trajectory));
+    let varying = query (accessor, &self.object.varying) ;
+    match varying.action.as_ref().unwrap().action_type.clone() {
+      ActionType::BuildGuild => 
+        create_object (accessor, & self.object, 0x379661e69cdd5fe7,
+          ObjectVarying {
+            object_type: ObjectType::Guild,
+            team: varying.team,
+            trajectory: LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
+            .. Default::default()
+          },
+        ),
+      ActionType::RecruitRanger =>
+        create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
+          ObjectVarying {
+            object_type: ObjectType::Ranger,
+            team: varying.team,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
+            .. Default::default()
+          },
+        ),
+      ActionType::Think => {
+        if varying.target.as_ref().map_or(true, |target| is_destroyed (accessor, target)) {
+          let position = varying.trajectory.evaluate (*accessor.now());
+          for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.object)) {
+            let other_varying = query (accessor, & other.varying);
+            if is_enemy (accessor, & self.object, & other) && match other_varying.object_type {ObjectType::Ranger => false,_=> true} {
+              let other_position = other_varying.trajectory.evaluate (*accessor.now());
+              let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
+              //println!("vel {:?}", (&new_velocity));
+              modify_object (accessor, & self.object, | varying | {
+                varying.trajectory.set_velocity (*accessor.now(), new_velocity);
+                varying.target = Some (other);
+              });
+            }
+          }
+        }
+
+      },
+      ActionType::Shoot => {
+        destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+      },
+    }
+    
+    choose_action (accessor, &self.object);
   }
 }
+
 
 define_event! {
-  pub struct RecruitRanger {guild: ObjectHandle},
-  PersistentTypeId(0x90198a81b2628f04),
+  pub struct Collide {objects: [ObjectHandle; 2]},
+  PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    modify_object (accessor, & self.guild, | varying | {
-      unwrap_object_type!(varying, Guild).gold.add (*accessor.now(), - 100*SECOND) ;
-    });
-    let varying = query (accessor, &self.guild.varying) ;
-    create_object (accessor, & self.guild, 0x91db5029ba8b0a4e,
-      LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
-      ObjectType::Ranger (Ranger {thoughts: LinearTrajectory1::new (*accessor.now(), 0, 10), target: None}),
-    );
+    destroy_object (accessor, & self.objects [0]);
+    destroy_object (accessor, & self.objects [1]);
   }
 }
 
 
-
+/*
 define_event! {
   pub struct Think {ranger: ObjectHandle},
   PersistentTypeId(0xe35485dcd0277599),
@@ -317,15 +387,7 @@ define_event! {
     modify_object (accessor, & self.ranger, | varying | {
       //let ranger =
       unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 10*SECOND) ;
-      let position = varying.trajectory.evaluate (*accessor.now());
-      for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& self.ranger)) {
-        if is_enemy (accessor, & self.ranger, & object) {
-          if distance_squared (position, query (accessor, & object.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
-            attack = Some (object.clone());
-          }
-        }
-      }
-      
+            
       if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
         for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
           let other_varying = query (accessor, & object.varying);
@@ -346,7 +408,7 @@ define_event! {
 }
 
 
-
+*/
 struct Game {
   steward: Steward,
   now: Time,
@@ -397,7 +459,7 @@ fn main() {
     var canvas = window.canvas = document.createElement ("canvas");
     canvas.setAttribute ("width", 600);
     canvas.setAttribute ("height", 600);
-    document.body.appendChild (canvas);
+    (document.querySelector("main") || document.body).appendChild (canvas);
     window.context = canvas.getContext ("2d");
   }
   
@@ -479,6 +541,10 @@ where V: Copy + Add <V, Output = V> + AddAssign <V> + Mul <Time, Output = V> {
     self.update (time) ;
     self.velocity += added;
   }
+  fn set (&mut self, time: Time, added: V) {
+    self.update (time) ;
+    self.position = added;
+  }
   fn set_velocity (&mut self, time: Time, added: V) {
     self.update (time) ;
     self.velocity = added;
@@ -517,6 +583,27 @@ impl LinearTrajectory2 {
         }
       })
     ).min()
+  }
+  fn when_collides (&self, now: Time, other: & Self, distance: Coordinate)->Option <Time> {
+    let mut displacement = self.clone();
+    displacement.update (now);
+    let mut other = other.clone();
+    other.update (now);
+    displacement.position -= other.position;
+    displacement.velocity -= other.velocity;
+    //let polynomial = time_steward::support::rounding_error_tolerant_math::multiply_polynomials (
+    //  &[Range::exactly (displacement.position[0]), Range::exactly (displacement.velocity [0])
+    time_steward::support::rounding_error_tolerant_math::roots (& [
+      Range::exactly (displacement.position [0])*displacement.position [0] +
+      Range::exactly (displacement.position [1])*displacement.position [1] - Range::exactly (distance),
+      Range::exactly (displacement.position [0])*displacement.velocity[0]*2 +
+      Range::exactly (displacement.position [1])*displacement.velocity[1]*2,
+      Range::exactly (displacement.velocity [0])*displacement.velocity[0] +
+      Range::exactly (displacement.velocity [1])*displacement.velocity[1],
+      ],
+      now,
+      Time::max_value(),
+    ).first().map (| front | front.max())
   }
   fn constant (time: Time, position: Vector)->Self {
     LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
