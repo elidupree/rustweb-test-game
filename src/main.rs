@@ -25,6 +25,8 @@ use simple_timeline::{SimpleTimeline, query, set};
 use self::collisions::{NumDimensions, Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
 
+use time_steward::support::rounding_error_tolerant_math::Range;
+
 fn modify<A: EventAccessor <Steward = Steward>, T: QueryResult, F: FnOnce(&mut T)>(accessor: &A, cell: &DataTimelineCell <SimpleTimeline <T, Steward>>, f: F) {
   let mut data = query (accessor, cell);
   (f)(&mut data);
@@ -70,9 +72,15 @@ const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
 const RANGER_RANGE: Coordinate = STRIDE*10;
 
-fn distance_squared (first: Vector, second: Vector)->Coordinate {
-  (second [0] - first [0])*(second [0] - first [0])
-  + (second [1] - first [1])*(second [1] - first [1])
+fn distance_squared (first: Vector, second: Vector)->Range {
+  Range::exactly (second [0] - first [0])*Range::exactly (second [0] - first [0])
+  + Range::exactly (second [1] - first [1])*Range::exactly (second [1] - first [1])
+}
+fn distance (first: Vector, second: Vector)->Range {
+  distance_squared (first, second).sqrt().unwrap()
+}
+fn normalized_to (vector: Vector, length: Coordinate)->Vector {
+  vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -205,6 +213,7 @@ impl BasicsTrait for Basics {
   type Time = Time;
   type Globals = Globals;
   type Types = (ListedType <BuildGuild>);
+  const MAX_ITERATION: u32 = 12;
 }
 
 type Steward = steward_module::Steward <Basics>;
@@ -327,7 +336,7 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
           iter::once (accessor.create_prediction (guild.gold.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, RecruitRanger {guild: object.clone()}))
         },
         ObjectType::Ranger (ref ranger) => {
-          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (*accessor.now(), 100*SECOND).unwrap(), id, Think {ranger: object.clone()}))
+          iter::once (accessor.create_prediction (ranger.thoughts.when_reaches (*accessor.now(), 10*SECOND).unwrap(), id, Think {ranger: object.clone()}))
         },
       }
     );
@@ -365,13 +374,15 @@ define_event! {
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.palace, | varying | {
-      unwrap_object_type!(varying, Palace).gold.add (*accessor.now(), - 100) ;
+      unwrap_object_type!(varying, Palace).gold.add (*accessor.now(), - 100*SECOND) ;
     });
-    let varying = query (accessor, &self.palace.varying) ;
+    let mut varying = query (accessor, &self.palace.varying) ;
     create_object (accessor, & self.palace, 0x379661e69cdd5fe7,
       LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + Vector2::new (0, PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
       ObjectType::Guild (Guild {gold: LinearTrajectory1::new (*accessor.now(), 0, 10)}),
     );
+    println!("{:?}", (unwrap_object_type!(varying, Palace)));
+    println!("{:?}", (&varying.object_type, &varying.trajectory));
   }
 }
 
@@ -380,7 +391,7 @@ define_event! {
   PersistentTypeId(0x90198a81b2628f04),
   fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.guild, | varying | {
-      unwrap_object_type!(varying, Guild).gold.add (*accessor.now(), - 100) ;
+      unwrap_object_type!(varying, Guild).gold.add (*accessor.now(), - 100*SECOND) ;
     });
     let varying = query (accessor, &self.guild.varying) ;
     create_object (accessor, & self.guild, 0x91db5029ba8b0a4e,
@@ -399,7 +410,7 @@ define_event! {
     let mut attack = None;
     modify_object (accessor, & self.ranger, | varying | {
       //let ranger =
-      unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 100) ;
+      unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 10*SECOND) ;
       let position = varying.trajectory.evaluate (*accessor.now());
       for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& self.ranger)) {
         if is_enemy (accessor, & self.ranger, & object) {
@@ -412,7 +423,11 @@ define_event! {
       if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
         for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
           if is_enemy (accessor, & self.ranger, & object) {
+            let other_position = query (accessor, & object.varying).trajectory.evaluate (*accessor.now());
             unwrap_object_type!(varying, Ranger).target = Some (object);
+            let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
+            println!("vel {:?}", (&new_velocity));
+            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
           }
         }
       }
@@ -483,7 +498,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64, center [1] as f64)/scale;
     let object_radius = radius (& varying) as f64/scale ;
-    println!("{:?}", (varying.object_type, varying.trajectory, center, object_radius));
+    println!("{:?}", (varying.trajectory, center, object_radius));
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
