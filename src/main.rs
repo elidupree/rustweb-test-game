@@ -246,8 +246,8 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
         consider (accessor.create_prediction (varying.action_progress.when_reaches (*accessor.now(), action_cost (action)).unwrap(), id, CompleteAction {object: object.clone()}));
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
-        if is_enemy (accessor, & object, & other) {
-          let other_varying = query (accessor, & other.varying);
+        let other_varying = query (accessor, & other.varying);
+        if is_enemy (accessor, & object, & other) && (varying.object_type == ObjectType::Arrow) != (other_varying.object_type == ObjectType::Arrow) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
             consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
           }
