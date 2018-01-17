@@ -441,7 +441,7 @@ define_event! {
             let other_position = other_varying.trajectory.evaluate (*accessor.now());
             unwrap_object_type!(varying, Ranger).target = Some (object);
             let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
-            println!("vel {:?}", (&new_velocity));
+            //println!("vel {:?}", (&new_velocity));
             varying.trajectory.set_velocity (*accessor.now(), new_velocity);
           }
         }
@@ -513,7 +513,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64 + PALACE_DISTANCE as f64, center [1] as f64 + PALACE_DISTANCE as f64*1.5)/scale;
     let object_radius = radius (& varying) as f64/scale ;
-    println!("{:?}", (varying.trajectory, center, object_radius));
+    //println!("{:?}", (varying.trajectory, center, object_radius));
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
