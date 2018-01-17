@@ -436,6 +436,12 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
         context.fill();
       }
     }
+    if let Some(action) = varying.action.as_ref() {js! {
+      context.beginPath();
+      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{varying.action_progress.evaluate (*accessor.now()) as f64/action_cost (action) as f64}*Math.PI*2);
+      context.fillStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
+      context.fill();
+    }}
   }
 }
 
