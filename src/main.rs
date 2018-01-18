@@ -253,6 +253,7 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
         let other_varying = query (accessor, & other.varying);
+        assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
         if is_enemy (accessor, & object, & other) && (varying.object_type == ObjectType::Arrow) != (other_varying.object_type == ObjectType::Arrow) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
             consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
@@ -285,8 +286,10 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
         for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
-          if is_enemy (accessor, & other, & object) {
-            if distance_squared (position, query (accessor, & other.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
+          assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+          let other_varying = query (accessor, & other.varying);
+          if is_enemy (accessor, & other, & object) && other_varying.object_type != ObjectType::Arrow {
+            if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
               result = Some (Action {
                 action_type: ActionType::Shoot,
                 target: Some(other.clone()),
