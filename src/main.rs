@@ -23,7 +23,7 @@ use time_steward::{DeterministicRandomId};
 use time_steward::{PersistentTypeId, ListedType, PersistentlyIdentifiedType, DataTimelineCellTrait, QueryResult, EventHandleTrait, Basics as BasicsTrait};
 pub use time_steward::stewards::{simple_full as steward_module};
 use steward_module::{TimeSteward, ConstructibleTimeSteward, Event, DataHandle, DataTimelineCell, Accessor, EventAccessor, FutureCleanupAccessor, simple_timeline, bbox_collision_detection_2d as collisions};
-use simple_timeline::{SimpleTimeline, query, set};
+use simple_timeline::{SimpleTimeline, query, query_ref, set};
 use self::collisions::{NumDimensions, Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
 
@@ -88,7 +88,7 @@ impl collisions::Space for Space {
   // It would normally include a DataHandle to a tree node.
   // These are getter and setter methods for that data.
   fn get_detector_data<A: Accessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>)->Option<Self::DetectorDataPerObject> {
-    query (accessor, &object.varying).detector_data
+    query_ref (accessor, &object.varying).detector_data.clone()
   }
   fn set_detector_data<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, data: Option<Self::DetectorDataPerObject>) {
     modify (accessor, &object.varying, | varying | varying.detector_data = data);
@@ -98,12 +98,12 @@ impl collisions::Space for Space {
   }
 
   fn current_bounding_box<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>)->BoundingBox {
-    let varying = query (accessor, & object.varying);
+    let varying = query_ref (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
     BoundingBox::centered (to_collision_vector (center), radius (&varying) as u64)
   }
   fn when_escapes<A: EventAccessor <Steward = Self::Steward>>(&self, accessor: &A, object: &DataHandle<Self::Object>, bounds: BoundingBox)->Option<<<Self::Steward as TimeSteward>::Basics as BasicsTrait>::Time> {
-    let varying = query (accessor, & object.varying);
+    let varying = query_ref (accessor, & object.varying);
     varying.trajectory.when_escapes (
       accessor.now().clone(),
       [
@@ -226,22 +226,24 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   let nearby = Detector::objects_near_object (accessor, & get_detector (accessor), object);
   Detector::remove (accessor, & get_detector (accessor), object);
   for other in nearby {
-    if let Some(collide) = query (accessor, & other.varying).prediction.as_ref() {
+    let mut update = false;
+    if let Some(collide) = query_ref (accessor, & other.varying).prediction.as_ref() {
       if let Some(collide) = collide.downcast_ref::<Collide>() {
         if &collide.objects [0] == object || &collide.objects [1] == object {
-          update_prediction (accessor, & other);
+          update = true;
         }
       }
     }
+    if update { update_prediction (accessor, & other); }
   }
 }
 
 fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->bool {
-  query (accessor, & object.varying).destroyed
+  query_ref (accessor, & object.varying).destroyed
 }
 
 fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
-  query (accessor, & object.varying).team != query (accessor, & other.varying).team
+  query_ref (accessor, & object.varying).team != query_ref (accessor, & other.varying).team
 }
 
 
@@ -264,7 +266,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
         consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.cost).unwrap(), id, CompleteAction {object: object.clone()}));
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
-        let other_varying = query (accessor, & other.varying);
+        let other_varying = query_ref (accessor, & other.varying);
         assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
         if is_enemy (accessor, & object, & other) && (varying.object_type == ObjectType::Arrow) != (other_varying.object_type == ObjectType::Arrow) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
@@ -302,7 +304,7 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         let mut result = None;
         for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
-          let other_varying = query (accessor, & other.varying);
+          let other_varying = query_ref (accessor, & other.varying);
           if is_enemy (accessor, & other, & object) && other_varying.object_type != ObjectType::Arrow {
             let range = RANGER_RANGE + radius (& other_varying);
             if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (range)*range {
@@ -402,14 +404,14 @@ define_event! {
         if varying.target.as_ref().map_or(true, |target| is_destroyed (accessor, target)) {
           let position = varying.trajectory.evaluate (*accessor.now());
           for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.object)) {
-            let other_varying = query (accessor, & other.varying);
+            let other_varying = query_ref (accessor, & other.varying);
             if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
               let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
               //println!("vel {:?}", (&new_velocity));
               modify_object (accessor, & self.object, | varying | {
                 varying.trajectory.set_velocity (*accessor.now(), new_velocity);
-                varying.target = Some (other);
+                varying.target = Some (other.clone());
               });
             }
           }
@@ -420,9 +422,8 @@ define_event! {
         let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
         if !is_destroyed (accessor, target) {
         //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
-        let other_varying = query (accessor, & target.varying);
         let position = varying.trajectory.evaluate (*accessor.now());
-        let other_position = other_varying.trajectory.evaluate (*accessor.now());
+        let other_position = query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now());
         let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
         create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
           object_type: ObjectType::Arrow,
@@ -447,7 +448,7 @@ define_event! {
   pub struct Collide {objects: [ObjectHandle; 2]},
   PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    let (arrow, victim) = if query (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
+    let (arrow, victim) = if query_ref (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
     destroy_object (accessor, arrow);
     let mut dead = false;
     modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = varying.hitpoints == 0;});
@@ -469,7 +470,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
   }
   for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None) {
     let scale = STRIDE as f64/2.0;
-    let varying = query (accessor, & object.varying);
+    let varying = query_ref (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64 + PALACE_DISTANCE as f64, center [1] as f64 + PALACE_DISTANCE as f64*1.5)/scale;
     let object_radius = radius (& varying) as f64/scale ;
@@ -504,7 +505,7 @@ fn main_loop (time: f64, mut game: Game) {
   draw_game (& snapshot);
   game.steward.forget_before (& game.now);
   
-  let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query (& snapshot, & object.varying).team).collect();
+  let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
   if teams_alive.len() > 1 {
     web::window().request_animation_frame (move | time | main_loop (time, game));
   }
@@ -542,7 +543,7 @@ fn main() {
     let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
     game.steward.forget_before (& game.now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query (& snapshot, & object.varying).team).collect();
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
     if teams_alive.len() <= 1 {
       break;
     }
