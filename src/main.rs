@@ -226,7 +226,13 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   let nearby = Detector::objects_near_object (accessor, & get_detector (accessor), object);
   Detector::remove (accessor, & get_detector (accessor), object);
   for other in nearby {
-    object_changed (accessor, & other);
+    if let Some(collide) = query (accessor, & other.varying).prediction.as_ref() {
+      if let Some(collide) = collide.downcast_ref::<Collide>() {
+        if &collide.objects [0] == object || &collide.objects [1] == object {
+          update_prediction (accessor, & other);
+        }
+      }
+    }
   }
 }
 
@@ -246,7 +252,7 @@ fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVar
   object_changed (accessor, object);
 }
 
-fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
   modify (accessor, & object.varying, | varying | {
     let mut earliest_prediction = None;
@@ -270,7 +276,10 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
     
     varying.prediction = earliest_prediction;
   });
-  Detector::changed_position (accessor, & get_detector (accessor), object);
+}
+fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  update_prediction (accessor, object);
+  Detector::changed_course (accessor, & get_detector (accessor), object);
 }
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
