@@ -11,7 +11,6 @@ extern crate rand;
 
 extern crate time_steward;
 
-use std::iter;
 use std::ops::{Add, AddAssign, Mul};
 
 use stdweb::web;
@@ -301,7 +300,7 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         if result.is_none() {result = Some(Action {
           action_type: ActionType::Think,
           progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-          cost: 10*SECOND + generator.gen_range (- SECOND, SECOND),
+          cost: 6*SECOND + generator.gen_range (- SECOND, SECOND),
           ..Default::default()}
         )}
         result
@@ -394,7 +393,7 @@ define_event! {
         let other_varying = query (accessor, & target.varying);
         let position = varying.trajectory.evaluate (*accessor.now());
         let other_position = other_varying.trajectory.evaluate (*accessor.now());
-        let new_velocity = normalized_to (other_position - position, 100*STRIDE/SECOND);
+        let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
         create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
           object_type: ObjectType::Arrow,
           team: varying.team,
