@@ -11,7 +11,6 @@ extern crate rand;
 
 extern crate time_steward;
 
-use std::iter;
 use std::ops::{Add, AddAssign, Mul};
 
 use stdweb::web;
@@ -138,6 +137,7 @@ enum ObjectType {
   Palace,
   Guild,
   Ranger,
+  Arrow,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -146,15 +146,23 @@ enum ActionType {
   RecruitRanger,
   Think,
   Shoot,
+  Disappear,
 }
 
-impl Default for ActionType {fn default()->Self {ActionType::Think}}
-
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct Action {
   action_type: ActionType,
   target: Option <ObjectHandle>,
+  progress: LinearTrajectory1,
+  cost: Coordinate,
 }
+
+impl Default for Action {fn default()->Self {Action {
+  action_type: ActionType::Think,
+  target: None,
+  progress: LinearTrajectory1::new (0, 0, 0),
+  cost: 999*SECOND,
+}}}
 
 
 #[derive (Clone, Serialize, Deserialize, Debug)]
@@ -173,8 +181,8 @@ struct ObjectVarying {
   trajectory: LinearTrajectory2,
   detector_data: Option <DetectorData>,
   team: usize,
+  hitpoints: i64,
   action: Option <Action>,
-  action_progress: LinearTrajectory1,
   target: Option <ObjectHandle>,
   prediction: Option <EventHandle>,
   destroyed: bool,
@@ -185,8 +193,8 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   trajectory: LinearTrajectory2::constant (0, Vector::new (0, 0)),
   detector_data: None,
   team: 0,
+  hitpoints: 1,
   action: None,
-  action_progress: LinearTrajectory1::new (0, 0, 10),
   target: None,
   prediction: None,
   destroyed: false,
@@ -214,7 +222,18 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
     varying.prediction = None;
     varying.destroyed = true;
   });
+  // fix any predictions of colliding with this
+  let nearby = Detector::objects_near_object (accessor, & get_detector (accessor), object);
   Detector::remove (accessor, & get_detector (accessor), object);
+  for other in nearby {
+    if let Some(collide) = query (accessor, & other.varying).prediction.as_ref() {
+      if let Some(collide) = collide.downcast_ref::<Collide>() {
+        if &collide.objects [0] == object || &collide.objects [1] == object {
+          update_prediction (accessor, & other);
+        }
+      }
+    }
+  }
 }
 
 fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->bool {
@@ -233,7 +252,7 @@ fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVar
   object_changed (accessor, object);
 }
 
-fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
   modify (accessor, & object.varying, | varying | {
     let mut earliest_prediction = None;
@@ -242,11 +261,12 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
         if earliest_prediction.as_ref().map_or (true, | earliest: & EventHandle | prediction.extended_time() < earliest.extended_time()) {earliest_prediction = Some (prediction);}
       };
       if let Some (action) = varying.action.as_ref() {
-        consider (accessor.create_prediction (varying.action_progress.when_reaches (*accessor.now(), action_cost (action)).unwrap(), id, CompleteAction {object: object.clone()}));
+        consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.cost).unwrap(), id, CompleteAction {object: object.clone()}));
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
-        if is_enemy (accessor, & object, & other) {
-          let other_varying = query (accessor, & other.varying);
+        let other_varying = query (accessor, & other.varying);
+        assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+        if is_enemy (accessor, & object, & other) && (varying.object_type == ObjectType::Arrow) != (other_varying.object_type == ObjectType::Arrow) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
             consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
           }
@@ -256,29 +276,63 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
     
     varying.prediction = earliest_prediction;
   });
-  Detector::changed_position (accessor, & get_detector (accessor), object);
+}
+fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  update_prediction (accessor, object);
+  Detector::changed_course (accessor, & get_detector (accessor), object);
 }
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
   modify_object (accessor, & object, | varying | {
     varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => Some(Action {action_type: ActionType::BuildGuild,..Default::default()}),
-      ObjectType::Guild => Some(Action {action_type: ActionType::RecruitRanger,..Default::default()}),
+      ObjectType::Palace => Some(Action {
+        action_type: ActionType::BuildGuild,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
+        ..Default::default()
+      }),
+      ObjectType::Guild => Some(Action {
+        action_type: ActionType::RecruitRanger,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
+        ..Default::default()
+      }),
       ObjectType::Ranger => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
         for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
-          if is_enemy (accessor, & other, & object) {
-            if distance_squared (position, query (accessor, & other.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
-              result = Some (Action {action_type: ActionType::Shoot, target: Some(other.clone()),..Default::default()});
+          assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+          let other_varying = query (accessor, & other.varying);
+          if is_enemy (accessor, & other, & object) && other_varying.object_type != ObjectType::Arrow {
+            let range = RANGER_RANGE + radius (& other_varying);
+            if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (range)*range {
+              result = Some (Action {
+                action_type: ActionType::Shoot,
+                target: Some(other.clone()),
+                progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+                cost: 10*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+                ..Default::default()
+              });
+              varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
+              varying.target = None;
             }
           }
         }
-        if result.is_none() {result = Some(Action {action_type: ActionType::Think,..Default::default()})}
+        if result.is_none() {result = Some(Action {
+          action_type: ActionType::Think,
+          progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+          cost: 6*SECOND + generator.gen_range (- SECOND, SECOND),
+          ..Default::default()}
+        )}
         result
       },
-      
+      ObjectType::Arrow => Some(Action {
+        action_type: ActionType::Disappear,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 5*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        ..Default::default()}
+      ),
     };
-    varying.action_progress.set (*accessor.now(), 0);
   });
 }
 
@@ -287,13 +341,14 @@ fn radius (varying: & ObjectVarying)->Coordinate {
     ObjectType::Palace => PALACE_RADIUS,
     ObjectType::Guild => GUILD_RADIUS,
     ObjectType::Ranger => STRIDE/2,
+    ObjectType::Arrow => STRIDE/5,
   }
 }
-fn action_cost (action: & Action)->Coordinate {
-  match action.action_type {
-    ActionType::Think => 10*SECOND,
-    ActionType::Shoot => 10*SECOND,
-    _ => 100*SECOND,
+fn is_building(varying: & ObjectVarying)->bool {
+  match varying.object_type {
+    ObjectType::Palace => true,
+    ObjectType::Guild => true,
+    _=>false,
   }
 }
 
@@ -308,6 +363,7 @@ define_event! {
         ObjectVarying {
           object_type: ObjectType::Palace,
           team: team,
+          hitpoints: 100,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
           .. Default::default()
         },
@@ -327,6 +383,7 @@ define_event! {
           ObjectVarying {
             object_type: ObjectType::Guild,
             team: varying.team,
+            hitpoints: 20,
             trajectory: LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
             .. Default::default()
           },
@@ -336,6 +393,7 @@ define_event! {
           ObjectVarying {
             object_type: ObjectType::Ranger,
             team: varying.team,
+            hitpoints: 5,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
             .. Default::default()
           },
@@ -345,7 +403,7 @@ define_event! {
           let position = varying.trajectory.evaluate (*accessor.now());
           for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.object)) {
             let other_varying = query (accessor, & other.varying);
-            if is_enemy (accessor, & self.object, & other) && match other_varying.object_type {ObjectType::Ranger => false,_=> true} {
+            if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
               let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
               //println!("vel {:?}", (&new_velocity));
@@ -359,7 +417,24 @@ define_event! {
 
       },
       ActionType::Shoot => {
-        destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+        let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
+        if !is_destroyed (accessor, target) {
+        //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+        let other_varying = query (accessor, & target.varying);
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let other_position = other_varying.trajectory.evaluate (*accessor.now());
+        let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
+        create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
+          object_type: ObjectType::Arrow,
+          team: varying.team,
+          trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
+          .. Default::default()
+        });
+        }
+      },
+      ActionType::Disappear => {
+        destroy_object (accessor, & self.object);
+        return
       },
     }
     
@@ -372,43 +447,16 @@ define_event! {
   pub struct Collide {objects: [ObjectHandle; 2]},
   PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    destroy_object (accessor, & self.objects [0]);
-    destroy_object (accessor, & self.objects [1]);
+    let (arrow, victim) = if query (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
+    destroy_object (accessor, arrow);
+    let mut dead = false;
+    modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = varying.hitpoints == 0;});
+    if dead {destroy_object (accessor, victim);}
   }
 }
 
 
-/*
-define_event! {
-  pub struct Think {ranger: ObjectHandle},
-  PersistentTypeId(0xe35485dcd0277599),
-  fn execute (&self, accessor: &mut Accessor) {
-    let mut attack = None;
-    modify_object (accessor, & self.ranger, | varying | {
-      //let ranger =
-      unwrap_object_type!(varying, Ranger).thoughts.add (*accessor.now(), - 10*SECOND) ;
-            
-      if unwrap_object_type!(varying, Ranger).target.as_ref().map_or (true, | target | is_destroyed (accessor, target)) {
-        for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.ranger)) {
-          let other_varying = query (accessor, & object.varying);
-          if is_enemy (accessor, & self.ranger, & object) && match other_varying.object_type {ObjectType::Ranger (_) => false,_=> true} {
-            let other_position = other_varying.trajectory.evaluate (*accessor.now());
-            unwrap_object_type!(varying, Ranger).target = Some (object);
-            let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
-            //println!("vel {:?}", (&new_velocity));
-            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
-          }
-        }
-      }
-    });
-    if let Some(victim) = attack {
-      destroy_object (accessor, & victim);
-    }
-  }
-}
 
-
-*/
 struct Game {
   steward: Steward,
   now: Time,
@@ -438,7 +486,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     }
     if let Some(action) = varying.action.as_ref() {js! {
       context.beginPath();
-      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{varying.action_progress.evaluate (*accessor.now()) as f64/action_cost (action) as f64}*Math.PI*2);
+      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{action.progress.evaluate (*accessor.now()) as f64/action.cost as f64}*Math.PI*2);
       context.fillStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
       context.fill();
     }}
@@ -456,9 +504,13 @@ fn main_loop (time: f64, mut game: Game) {
   draw_game (& snapshot);
   game.steward.forget_before (& game.now);
   
-  web::window().request_animation_frame (move | time | main_loop (time, game));
+  let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query (& snapshot, & object.varying).team).collect();
+  if teams_alive.len() > 1 {
+    web::window().request_animation_frame (move | time | main_loop (time, game));
+  }
 }
 
+#[cfg (target_os = "emscripten")]
 fn main() {
   stdweb::initialize();
   js! {
@@ -476,6 +528,25 @@ fn main() {
   web::window().request_animation_frame (move | time | main_loop (time, game));
 
   stdweb::event_loop();
+}
+
+
+#[cfg (not(target_os = "emscripten"))]
+fn main() {
+  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
+  steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
+  let mut game = Game {steward: steward, now: 1, last_ui_time: 0.0};
+  
+  loop {
+    game.now += SECOND /100;
+    let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
+    game.steward.forget_before (& game.now);
+  
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query (& snapshot, & object.varying).team).collect();
+    if teams_alive.len() <= 1 {
+      break;
+    }
+  }
 }
 
 
@@ -599,17 +670,20 @@ impl LinearTrajectory2 {
     displacement.velocity -= other.velocity;
     //let polynomial = time_steward::support::rounding_error_tolerant_math::multiply_polynomials (
     //  &[Range::exactly (displacement.position[0]), Range::exactly (displacement.velocity [0])
-    time_steward::support::rounding_error_tolerant_math::roots (& [
+    let polynomial = [
       Range::exactly (displacement.position [0])*displacement.position [0] +
-      Range::exactly (displacement.position [1])*displacement.position [1] - Range::exactly (distance),
+      Range::exactly (displacement.position [1])*displacement.position [1] - Range::exactly (distance)*distance,
       Range::exactly (displacement.position [0])*displacement.velocity[0]*2 +
       Range::exactly (displacement.position [1])*displacement.velocity[1]*2,
       Range::exactly (displacement.velocity [0])*displacement.velocity[0] +
       Range::exactly (displacement.velocity [1])*displacement.velocity[1],
-      ],
-      now,
+      ];
+    let result = time_steward::support::rounding_error_tolerant_math::roots (& polynomial,
+      0,
       Time::max_value(),
-    ).first().map (| front | front.max())
+    ).first().and_then (| front | front.max().checked_add(now));
+    //println!("{:?}", (displacement, polynomial, distance, result));
+    result
   }
   fn constant (time: Time, position: Vector)->Self {
     LinearTrajectory {origin: time, position: position, velocity: Vector::new (0, 0)}
