@@ -495,7 +495,10 @@ fn main_loop (time: f64, mut game: Game) {
   draw_game (& snapshot);
   game.steward.forget_before (& game.now);
   
-  web::window().request_animation_frame (move | time | main_loop (time, game));
+  let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query (& snapshot, & object.varying).team).collect();
+  if teams_alive.len() > 1 {
+    web::window().request_animation_frame (move | time | main_loop (time, game));
+  }
 }
 
 fn main() {
