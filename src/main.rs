@@ -149,13 +149,20 @@ enum ActionType {
   Shoot,
 }
 
-impl Default for ActionType {fn default()->Self {ActionType::Think}}
-
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 struct Action {
   action_type: ActionType,
   target: Option <ObjectHandle>,
+  progress: LinearTrajectory1,
+  cost: Coordinate,
 }
+
+impl Default for Action {fn default()->Self {Action {
+  action_type: ActionType::Think,
+  target: None,
+  progress: LinearTrajectory1::new (0, 0, 0),
+  cost: 999*SECOND,
+}}}
 
 
 #[derive (Clone, Serialize, Deserialize, Debug)]
@@ -175,7 +182,6 @@ struct ObjectVarying {
   detector_data: Option <DetectorData>,
   team: usize,
   action: Option <Action>,
-  action_progress: LinearTrajectory1,
   target: Option <ObjectHandle>,
   prediction: Option <EventHandle>,
   destroyed: bool,
@@ -187,7 +193,6 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   detector_data: None,
   team: 0,
   action: None,
-  action_progress: LinearTrajectory1::new (0, 0, 10),
   target: None,
   prediction: None,
   destroyed: false,
@@ -243,7 +248,7 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
         if earliest_prediction.as_ref().map_or (true, | earliest: & EventHandle | prediction.extended_time() < earliest.extended_time()) {earliest_prediction = Some (prediction);}
       };
       if let Some (action) = varying.action.as_ref() {
-        consider (accessor.create_prediction (varying.action_progress.when_reaches (*accessor.now(), action_cost (action)).unwrap(), id, CompleteAction {object: object.clone()}));
+        consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.cost).unwrap(), id, CompleteAction {object: object.clone()}));
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
         let other_varying = query (accessor, & other.varying);
@@ -260,28 +265,49 @@ fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   Detector::changed_position (accessor, & get_detector (accessor), object);
 }
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
   modify_object (accessor, & object, | varying | {
     varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => Some(Action {action_type: ActionType::BuildGuild,..Default::default()}),
-      ObjectType::Guild => Some(Action {action_type: ActionType::RecruitRanger,..Default::default()}),
+      ObjectType::Palace => Some(Action {
+        action_type: ActionType::BuildGuild,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 100*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        ..Default::default()
+      }),
+      ObjectType::Guild => Some(Action {
+        action_type: ActionType::RecruitRanger,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 100*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        ..Default::default()
+      }),
       ObjectType::Ranger => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
         for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
           if is_enemy (accessor, & other, & object) {
             if distance_squared (position, query (accessor, & other.varying).trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
-              result = Some (Action {action_type: ActionType::Shoot, target: Some(other.clone()),..Default::default()});
+              result = Some (Action {
+                action_type: ActionType::Shoot,
+                target: Some(other.clone()),
+                progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+                cost: 10*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+                ..Default::default()
+              });
               varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
               varying.target = None;
             }
           }
         }
-        if result.is_none() {result = Some(Action {action_type: ActionType::Think,..Default::default()})}
+        if result.is_none() {result = Some(Action {
+          action_type: ActionType::Think,
+          progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+          cost: 10*SECOND + generator.gen_range (- SECOND, SECOND),
+          ..Default::default()}
+        )}
         result
       },
       ObjectType::Arrow => { None },
     };
-    varying.action_progress.set (*accessor.now(), 0);
   });
 }
 
@@ -298,13 +324,6 @@ fn is_building(varying: & ObjectVarying)->bool {
     ObjectType::Palace => true,
     ObjectType::Guild => true,
     _=>false,
-  }
-}
-fn action_cost (action: & Action)->Coordinate {
-  match action.action_type {
-    ActionType::Think => 10*SECOND,
-    ActionType::Shoot => 10*SECOND,
-    _ => 100*SECOND,
   }
 }
 
@@ -430,7 +449,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
     }
     if let Some(action) = varying.action.as_ref() {js! {
       context.beginPath();
-      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{varying.action_progress.evaluate (*accessor.now()) as f64/action_cost (action) as f64}*Math.PI*2);
+      context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{action.progress.evaluate (*accessor.now()) as f64/action.cost as f64}*Math.PI*2);
       context.fillStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
       context.fill();
     }}
