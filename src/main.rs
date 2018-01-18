@@ -389,6 +389,7 @@ define_event! {
       },
       ActionType::Shoot => {
         let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
+        if !is_destroyed (accessor, target) {
         //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
         let other_varying = query (accessor, & target.varying);
         let position = varying.trajectory.evaluate (*accessor.now());
@@ -400,6 +401,7 @@ define_event! {
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
           .. Default::default()
         });
+        }
       },
     }
     
