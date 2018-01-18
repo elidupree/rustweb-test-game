@@ -295,7 +295,8 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
           let other_varying = query (accessor, & other.varying);
           if is_enemy (accessor, & other, & object) && other_varying.object_type != ObjectType::Arrow {
-            if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (RANGER_RANGE)*RANGER_RANGE {
+            let range = RANGER_RANGE + radius (& other_varying);
+            if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (range)*range {
               result = Some (Action {
                 action_type: ActionType::Shoot,
                 target: Some(other.clone()),
