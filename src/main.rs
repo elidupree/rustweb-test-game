@@ -180,6 +180,7 @@ struct ObjectVarying {
   trajectory: LinearTrajectory2,
   detector_data: Option <DetectorData>,
   team: usize,
+  hitpoints: i64,
   action: Option <Action>,
   target: Option <ObjectHandle>,
   prediction: Option <EventHandle>,
@@ -191,6 +192,7 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   trajectory: LinearTrajectory2::constant (0, Vector::new (0, 0)),
   detector_data: None,
   team: 0,
+  hitpoints: 1,
   action: None,
   target: None,
   prediction: None,
@@ -337,6 +339,7 @@ define_event! {
         ObjectVarying {
           object_type: ObjectType::Palace,
           team: team,
+          hitpoints: 100,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
           .. Default::default()
         },
@@ -356,6 +359,7 @@ define_event! {
           ObjectVarying {
             object_type: ObjectType::Guild,
             team: varying.team,
+            hitpoints: 20,
             trajectory: LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
             .. Default::default()
           },
@@ -365,6 +369,7 @@ define_event! {
           ObjectVarying {
             object_type: ObjectType::Ranger,
             team: varying.team,
+            hitpoints: 5,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
             .. Default::default()
           },
@@ -414,8 +419,11 @@ define_event! {
   pub struct Collide {objects: [ObjectHandle; 2]},
   PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    destroy_object (accessor, & self.objects [0]);
-    destroy_object (accessor, & self.objects [1]);
+    let (arrow, victim) = if query (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
+    destroy_object (accessor, arrow);
+    let mut dead = false;
+    modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = varying.hitpoints == 0;});
+    if dead {destroy_object (accessor, victim);}
   }
 }
 
