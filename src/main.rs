@@ -273,13 +273,13 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
       ObjectType::Palace => Some(Action {
         action_type: ActionType::BuildGuild,
         progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 100*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
         ..Default::default()
       }),
       ObjectType::Guild => Some(Action {
         action_type: ActionType::RecruitRanger,
         progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 100*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
         ..Default::default()
       }),
       ObjectType::Ranger => {
