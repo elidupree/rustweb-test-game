@@ -146,6 +146,7 @@ enum ActionType {
   RecruitRanger,
   Think,
   Shoot,
+  Disappear,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -315,7 +316,12 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         )}
         result
       },
-      ObjectType::Arrow => { None },
+      ObjectType::Arrow => Some(Action {
+        action_type: ActionType::Disappear,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 5*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        ..Default::default()}
+      ),
     };
   });
 }
@@ -415,6 +421,10 @@ define_event! {
           .. Default::default()
         });
         }
+      },
+      ActionType::Disappear => {
+        destroy_object (accessor, & self.object);
+        return
       },
     }
     
