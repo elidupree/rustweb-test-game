@@ -12,6 +12,8 @@ extern crate rand;
 extern crate time_steward;
 
 use std::ops::{Add, AddAssign, Mul};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use stdweb::web;
 use stdweb::unstable::TryInto;
@@ -470,14 +472,16 @@ struct Game {
   display_radius: Coordinate,
 }
 
+
 fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
   let canvas_width: f64 = js! {return canvas.width;}.try_into().unwrap();
   let scale = canvas_width/(game.display_radius as f64*2.0);
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
     context.save();
-    context.translate (@{-game.display_center [0] as f64}, @{-game.display_center [1] as f64});
     context.scale (@{scale},@{scale});
+    context.translate (@{-game.display_center [0] as f64}, @{-game.display_center [1] as f64});
+    
     context.translate (@{game.display_radius as f64}, @{game.display_radius as f64});
   }
   for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None) {
@@ -509,19 +513,25 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
   }
 }
 
-fn main_loop (time: f64, mut game: Game) {
-  let observed_duration = time - game.last_ui_time;
-  let duration_to_simulate = if observed_duration < 100.0 {observed_duration} else {100.0};
-  let duration_to_simulate = (duration_to_simulate*(SECOND as f64)/1000.0) as Time;
-  assert!(duration_to_simulate >= 0) ;
-  game.last_ui_time = time;
-  game.now += duration_to_simulate;
-  let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
-  draw_game (& snapshot, & game);
-  game.steward.forget_before (& game.now);
+fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
+  let continue_simulating;
+  {
+    let mut game = game.borrow_mut();
+    let observed_duration = time - game.last_ui_time;
+    let duration_to_simulate = if observed_duration < 100.0 {observed_duration} else {100.0};
+    let duration_to_simulate = (duration_to_simulate*(SECOND as f64)/1000.0) as Time;
+    assert!(duration_to_simulate >= 0) ;
+    game.last_ui_time = time;
+    game.now += duration_to_simulate;
+    let now = game.now.clone();
+    let snapshot = game.steward.snapshot_before (&now). unwrap ();
+    draw_game (& snapshot, & game);
+    game.steward.forget_before (&now);
   
-  let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
-  if teams_alive.len() > 1 {
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    continue_simulating = teams_alive.len() > 1;
+  }
+  if continue_simulating {
     web::window().request_animation_frame (move | time | main_loop (time, game));
   }
 }
@@ -539,7 +549,36 @@ fn main() {
   
   let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
   steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
-  let game = Game {steward: steward, now: 1, last_ui_time: 0.0, display_center: Vector::new (0, 0), display_radius: PALACE_DISTANCE*3/2,};
+  let game = Rc::new (RefCell::new (Game {
+    steward: steward,
+    now: 1,
+    last_ui_time: 0.0,
+    display_center: Vector::new (0, 0),
+    display_radius: PALACE_DISTANCE*3/2,
+  }));
+  
+  {
+    let game = game.clone();
+    let wheel_callback = move |x: f64,y: f64| {
+      let mut game = game.borrow_mut();
+      let position = game.display_center + Vector::new (
+        (x*game.display_radius as f64*2.0) as Coordinate,
+        (y*game.display_radius as f64*2.0) as Coordinate
+      );
+      game.display_center = position;
+      println!("{:?}", (x,y,game.display_center ));
+    };
+    js! {
+      var callback = @{wheel_callback};
+      canvas.addEventListener ("wheel", function (event) {
+        var offset = canvas.getBoundingClientRect();
+        callback (
+          (event.clientX - offset.left)/offset.width - 0.5,
+          (event.clientY - offset.top)/offset.height - 0.5
+        );
+      });
+    }
+  }
   
   web::window().request_animation_frame (move | time | main_loop (time, game));
 
