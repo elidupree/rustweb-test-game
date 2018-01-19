@@ -559,14 +559,18 @@ fn main() {
   
   {
     let game = game.clone();
-    let wheel_callback = move |x: f64,y: f64| {
+    let wheel_callback = move |x: f64,y: f64, delta: f64 | {
       let mut game = game.borrow_mut();
-      let position = game.display_center + Vector::new (
-        (x*game.display_radius as f64*2.0) as Coordinate,
-        (y*game.display_radius as f64*2.0) as Coordinate
+      let offset = Vector2::new (
+        x*game.display_radius as f64*2.0,
+        y*game.display_radius as f64*2.0
       );
-      game.display_center = position;
-      println!("{:?}", (x,y,game.display_center ));
+      let factor = (1.003f64).powf(delta);
+      game.display_radius = (game.display_radius as f64*factor) as Coordinate;
+      let modified_offset = offset*factor;
+      let difference = offset - modified_offset;
+      game.display_center += Vector2::new (difference [0] as Coordinate, difference [1] as Coordinate);
+      //println!("{:?}", (x,y,game.display_center));
     };
     js! {
       var callback = @{wheel_callback};
@@ -574,8 +578,10 @@ fn main() {
         var offset = canvas.getBoundingClientRect();
         callback (
           (event.clientX - offset.left)/offset.width - 0.5,
-          (event.clientY - offset.top)/offset.height - 0.5
+          (event.clientY - offset.top)/offset.height - 0.5,
+          event.deltaY
         );
+        event.preventDefault();
       });
     }
   }
