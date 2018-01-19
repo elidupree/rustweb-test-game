@@ -467,6 +467,7 @@ struct Game {
   
   now: Time,
   last_ui_time: f64,
+  time_speed: f64,
   
   display_center: Vector,
   display_radius: Coordinate,
@@ -519,7 +520,7 @@ fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
     let mut game = game.borrow_mut();
     let observed_duration = time - game.last_ui_time;
     let duration_to_simulate = if observed_duration < 100.0 {observed_duration} else {100.0};
-    let duration_to_simulate = (duration_to_simulate*(SECOND as f64)/1000.0) as Time;
+    let duration_to_simulate = (duration_to_simulate*(SECOND as f64)*game.time_speed/1000.0) as Time;
     assert!(duration_to_simulate >= 0) ;
     game.last_ui_time = time;
     game.now += duration_to_simulate;
@@ -540,10 +541,12 @@ fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
 fn main() {
   stdweb::initialize();
   js! {
+    var game_container = window.game_container = $("<div>");
     var canvas = window.canvas = document.createElement ("canvas");
     canvas.setAttribute ("width", 600);
     canvas.setAttribute ("height", 600);
-    (document.querySelector("main") || document.body).appendChild (canvas);
+    (document.querySelector("main") || document.body).appendChild (game_container[0]);
+    game_container.append(canvas);
     window.context = canvas.getContext ("2d");
   }
   
@@ -553,6 +556,7 @@ fn main() {
     steward: steward,
     now: 1,
     last_ui_time: 0.0,
+    time_speed: 1.0,
     display_center: Vector::new (0, 0),
     display_radius: PALACE_DISTANCE*3/2,
   }));
@@ -583,6 +587,26 @@ fn main() {
         );
         event.preventDefault();
       });
+    }
+  }
+  {
+    let game = game.clone();
+    let time_callback = move |speed: f64| {
+      let mut game = game.borrow_mut();
+      game.time_speed = (2.0f64).powf(speed/2.0);
+      println!("{:?}", (speed));
+    };
+    js! {
+      var callback = @{time_callback};
+      game_container.append(
+        $("<input>", {
+          type: "range",
+          id: "time_speed",
+          value: 0, min: -10, max: 10, step: 1
+        }).on ("input", function (event) {
+          callback(event.target.valueAsNumber);
+        })
+      );
     }
   }
   
