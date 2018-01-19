@@ -14,6 +14,8 @@ extern crate time_steward;
 use std::ops::{Add, AddAssign, Mul};
 
 use stdweb::web;
+use stdweb::unstable::TryInto;
+
 use array_ext::*;
 use nalgebra::{Vector2};
 use rand::Rng;
@@ -460,25 +462,35 @@ define_event! {
 
 struct Game {
   steward: Steward,
+  
   now: Time,
   last_ui_time: f64,
+  
+  display_center: Vector,
+  display_radius: Coordinate,
 }
 
-fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
+fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
+  let canvas_width: f64 = js! {return canvas.width;}.try_into().unwrap();
+  let scale = canvas_width/(game.display_radius as f64*2.0);
   js! {
     context.clearRect (0, 0, canvas.width, canvas.height);
+    context.save();
+    context.translate (@{-game.display_center [0] as f64}, @{-game.display_center [1] as f64});
+    context.scale (@{scale},@{scale});
+    context.translate (@{game.display_radius as f64}, @{game.display_radius as f64});
   }
   for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None) {
-    let scale = STRIDE as f64/2.0;
     let varying = query_ref (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
-    let center = Vector2::new (center [0] as f64 + PALACE_DISTANCE as f64, center [1] as f64 + PALACE_DISTANCE as f64*1.5)/scale;
-    let object_radius = radius (& varying) as f64/scale ;
+    let center = Vector2::new (center [0] as f64, center [1] as f64);
+    let object_radius = radius (& varying) as f64;
     //println!("{:?}", (varying.trajectory, center, object_radius));
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
       context.strokeStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",1.0)";
+      context.lineWidth = @{object_radius/30.0 + 0.5/scale};
       context.stroke();
       if (@{varying.team == 1}) {
         context.fillStyle = "rgba(255,0,0,0.2)";
@@ -492,6 +504,9 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A) {
       context.fill();
     }}
   }
+  js! {
+    context.restore();
+  }
 }
 
 fn main_loop (time: f64, mut game: Game) {
@@ -502,7 +517,7 @@ fn main_loop (time: f64, mut game: Game) {
   game.last_ui_time = time;
   game.now += duration_to_simulate;
   let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
-  draw_game (& snapshot);
+  draw_game (& snapshot, & game);
   game.steward.forget_before (& game.now);
   
   let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
@@ -524,7 +539,7 @@ fn main() {
   
   let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
   steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
-  let game = Game {steward: steward, now: 1, last_ui_time: 0.0};
+  let game = Game {steward: steward, now: 1, last_ui_time: 0.0, display_center: Vector::new (0, 0), display_radius: PALACE_DISTANCE*3/2,};
   
   web::window().request_animation_frame (move | time | main_loop (time, game));
 
