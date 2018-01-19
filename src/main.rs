@@ -593,7 +593,7 @@ fn main() {
     let game = game.clone();
     let time_callback = move |speed: f64| {
       let mut game = game.borrow_mut();
-      game.time_speed = (2.0f64).powf(speed/2.0);
+      game.time_speed = if speed == -10.0 { 0.0 } else { (2.0f64).powf(speed/2.0) };
       println!("{:?}", (speed));
     };
     js! {
