@@ -640,19 +640,33 @@ fn main() {
 
 #[cfg (not(target_os = "emscripten"))]
 fn main() {
+  let mut scores = [0; 2];
+  
+  loop {
+  
   let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
-  steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
-  let mut game = Game {steward: steward, now: 1, last_ui_time: 0.0};
+  steward.insert_fiat_event (0, DeterministicRandomId::new (& (scores, 0xae06fcf3129d0685u64)), Initialize {}).unwrap();
+  let mut game = Game {
+    steward: steward,
+    now: 1,
+    last_ui_time: 0.0,
+    time_speed: 1.0,
+    display_center: Vector::new (0, 0),
+    display_radius: PALACE_DISTANCE*3/2,
+  };
   
   loop {
     game.now += SECOND /100;
     let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
     game.steward.forget_before (& game.now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().filter (| object | is_building (&query_ref (& snapshot, & object.varying))).map (| object | query_ref (& snapshot, & object.varying).team).collect();
     if teams_alive.len() <= 1 {
+      scores [teams_alive.into_iter().next().unwrap()] += 1;
+      println!("{:?}", scores);
       break;
     }
+  }
   }
 }
 
