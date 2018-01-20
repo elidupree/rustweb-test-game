@@ -622,8 +622,13 @@ fn main() {
         type: "number",
         id: "seed",
         value:@{seed},
+        min: 0,
+        max: @{0u32.wrapping_sub(1)}
       }).on ("input", function (event) {
-        window.localStorage.setItem ("random_seed", event.target.valueAsNumber);
+        var value = Math.floor(event.target.valueAsNumber);
+        if (value >= 0 && value <= @{0u32.wrapping_sub(1)}) {
+          window.localStorage.setItem ("random_seed", value);
+        }
       }),
       $("<label>", {
         for: "seed",
