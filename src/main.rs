@@ -8,6 +8,7 @@ extern crate serde_derive;
 extern crate nalgebra;
 extern crate array_ext;
 extern crate rand;
+extern crate boolinator;
 
 extern crate time_steward;
 
@@ -21,6 +22,7 @@ use stdweb::unstable::TryInto;
 use array_ext::*;
 use nalgebra::{Vector2};
 use rand::Rng;
+use boolinator::Boolinator;
 
 
 use time_steward::{DeterministicRandomId};
@@ -188,6 +190,8 @@ struct ObjectVarying {
   hitpoints: i64,
   action: Option <Action>,
   target: Option <ObjectHandle>,
+  home: Option <ObjectHandle>,
+  dependents: Vec <ObjectHandle>,
   prediction: Option <EventHandle>,
   destroyed: bool,
 }
@@ -200,36 +204,53 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   hitpoints: 1,
   action: None,
   target: None,
+  home: None,
+  dependents: Vec::new(),
   prediction: None,
   destroyed: false,
 }}}
 
 
 
-fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, varying: ObjectVarying) {
+fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, varying: ObjectVarying)->ObjectHandle {
   let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
   set (accessor, & created.varying, varying);
   Detector::insert (accessor, & get_detector (accessor), & created, source_object);
   choose_action (accessor, & created) ;
   //object_changed (accessor, & created);
+  created
 }
 
-fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, varying: ObjectVarying) {
+fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: & ObjectHandle, unique: u64, varying: ObjectVarying)->ObjectHandle {
   create_object_impl (accessor, Some (source_object),
     DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), 
-    varying) ;
+    varying)
 }
 
 
 fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  let mut home = None;
   modify (accessor, & object.varying, | varying | {
     varying.prediction = None;
+    varying.action = None;
     varying.destroyed = true;
+    home = varying.home.take();
   });
-  // fix any predictions of colliding with this
   let nearby = Detector::objects_near_object (accessor, & get_detector (accessor), object);
   Detector::remove (accessor, & get_detector (accessor), object);
+  
+  if let Some(home) = home { if !is_destroyed(accessor, &home) {
+    let mut reconsider = false;
+    modify_object (accessor, & home, | varying | {
+      varying.dependents.retain (|a| a != object);
+      reconsider = varying.action.is_none();
+    });
+    if reconsider {choose_action (accessor, & home) ;}
+  }}
+  
+  // fix any predictions of colliding with this
   for other in nearby {
+    assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
     let mut update = false;
     if let Some(collide) = query_ref (accessor, & other.varying).prediction.as_ref() {
       if let Some(collide) = collide.downcast_ref::<Collide>() {
@@ -284,6 +305,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
   });
 }
 fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be changed") ;
   update_prediction (accessor, object);
   Detector::changed_course (accessor, & get_detector (accessor), object);
 }
@@ -291,13 +313,13 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
   let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
   modify_object (accessor, & object, | varying | {
     varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => Some(Action {
+      ObjectType::Palace => (varying.dependents.len() < 6).as_some (Action {
         action_type: ActionType::BuildGuild,
         progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
         cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
         ..Default::default()
       }),
-      ObjectType::Guild => Some(Action {
+      ObjectType::Guild => (varying.dependents.len() < 4).as_some (Action {
         action_type: ActionType::RecruitRanger,
         progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
         cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
@@ -384,26 +406,32 @@ define_event! {
   fn execute (&self, accessor: &mut Accessor) {
     let varying = query (accessor, &self.object.varying) ;
     match varying.action.as_ref().unwrap().action_type.clone() {
-      ActionType::BuildGuild => 
-        create_object (accessor, & self.object, 0x379661e69cdd5fe7,
+      ActionType::BuildGuild => {
+        let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
           ObjectVarying {
             object_type: ObjectType::Guild,
             team: varying.team,
+            home: Some (self.object.clone()),
             hitpoints: 20,
             trajectory: LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
             .. Default::default()
           },
-        ),
-      ActionType::RecruitRanger =>
-        create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
+        );
+        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+      },
+      ActionType::RecruitRanger => {
+        let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
           ObjectVarying {
             object_type: ObjectType::Ranger,
             team: varying.team,
+            home: Some (self.object.clone()),
             hitpoints: 5,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
             .. Default::default()
           },
-        ),
+        );
+        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+      },
       ActionType::Think => {
         if varying.target.as_ref().map_or(true, |target| is_destroyed (accessor, target)) {
           let position = varying.trajectory.evaluate (*accessor.now());
