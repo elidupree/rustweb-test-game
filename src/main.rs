@@ -478,6 +478,9 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
   let canvas_width: f64 = js! {return canvas.width;}.try_into().unwrap();
   let scale = canvas_width/(game.display_radius as f64*2.0);
   js! {
+    var size = Math.min (window.innerHeight, window.innerWidth, 600);
+    canvas.setAttribute ("width", size);
+    canvas.setAttribute ("height", size);
     context.clearRect (0, 0, canvas.width, canvas.height);
     context.save();
     context.scale (@{scale},@{scale});
@@ -543,8 +546,6 @@ fn main() {
   js! {
     var game_container = window.game_container = $("<div>");
     var canvas = window.canvas = document.createElement ("canvas");
-    canvas.setAttribute ("width", 600);
-    canvas.setAttribute ("height", 600);
     (document.querySelector("main") || document.body).appendChild (game_container[0]);
     game_container.append(canvas);
     window.context = canvas.getContext ("2d");
