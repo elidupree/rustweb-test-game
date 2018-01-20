@@ -550,8 +550,10 @@ fn main() {
     window.context = canvas.getContext ("2d");
   }
   
+  let seed: u32 = js!{return window.localStorage && parseInt(window.localStorage.getItem ("random_seed")) || 0}.try_into().unwrap();
+  
   let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
-  steward.insert_fiat_event (0, DeterministicRandomId::new (& 0xae06fcf3129d0685u64), Initialize {}).unwrap();
+  steward.insert_fiat_event (0, DeterministicRandomId::new (& (seed, 0xae06fcf3129d0685u64)), Initialize {}).unwrap();
   let game = Rc::new (RefCell::new (Game {
     steward: steward,
     now: 1,
@@ -598,16 +600,36 @@ fn main() {
     };
     js! {
       var callback = @{time_callback};
-      game_container.append(
+      game_container.append($("<div>").append(
         $("<input>", {
           type: "range",
           id: "time_speed",
           value: 0, min: -10, max: 10, step: 1
         }).on ("input", function (event) {
           callback(event.target.valueAsNumber);
+        }),
+        $("<label>", {
+          for: "time_speed",
+          text: " time speed",
         })
-      );
+      ));
     }
+  }
+
+  js! {
+    game_container.append($("<div>").append(
+      $("<input>", {
+        type: "number",
+        id: "seed",
+        value:@{seed},
+      }).on ("input", function (event) {
+        window.localStorage.setItem ("random_seed", event.target.valueAsNumber);
+      }),
+      $("<label>", {
+        for: "seed",
+        text: " random seed (reload page to apply)",
+      })
+    ));
   }
   
   web::window().request_animation_frame (move | time | main_loop (time, game));
