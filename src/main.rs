@@ -331,24 +331,33 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
       ObjectType::Ranger => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
-        for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object)) {
+        
+        let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object));
+        let closest = nearby.into_iter().filter_map (| other | {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
           let other_varying = query_ref (accessor, & other.varying);
-          if is_enemy (accessor, & other, & object) && other_varying.object_type != ObjectType::Arrow {
-            let range = RANGER_RANGE + radius (& other_varying);
-            if distance_squared (position, other_varying.trajectory.evaluate (*accessor.now())) <= Range::exactly (range)*range {
-              result = Some (Action {
-                action_type: ActionType::Shoot,
-                target: Some(other.clone()),
-                progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-                cost: 10*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
-                ..Default::default()
-              });
-              varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
-              varying.target = None;
+          if is_enemy (accessor, object, & other) && other_varying.object_type != ObjectType::Arrow {
+            let other_position = other_varying.trajectory.evaluate (*accessor.now());
+            let other_distance = distance (position, other_position).max();
+            if other_distance <= RANGER_RANGE + radius (& other_varying) {
+              return Some ((other.clone(), other_distance, other_position));
             }
           }
+          None
+        }).min_by_key (| t | t.1);
+        
+        if let Some(closest) = closest {
+          result = Some (Action {
+            action_type: ActionType::Shoot,
+            target: Some(closest.0),
+            progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+            cost: 10*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+            ..Default::default()
+          });
+          varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
+          //varying.target = None;
         }
+                  
         if result.is_none() {result = Some(Action {
           action_type: ActionType::Think,
           progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
