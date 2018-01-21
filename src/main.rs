@@ -75,6 +75,7 @@ const PALACE_RADIUS: Coordinate = STRIDE*20;
 const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
 const RANGER_RANGE: Coordinate = STRIDE*20;
+const AWARENESS_RANGE: Coordinate = STRIDE*100;
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -190,6 +191,7 @@ struct ObjectVarying {
   hitpoints: i64,
   action: Option <Action>,
   target: Option <ObjectHandle>,
+  target_location: Option <Vector>,
   home: Option <ObjectHandle>,
   dependents: Vec <ObjectHandle>,
   prediction: Option <EventHandle>,
@@ -204,6 +206,7 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   hitpoints: 1,
   action: None,
   target: None,
+  target_location: None,
   home: None,
   dependents: Vec::new(),
   prediction: None,
@@ -433,22 +436,53 @@ define_event! {
         modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
       },
       ActionType::Think => {
-        if varying.target.as_ref().map_or(true, |target| is_destroyed (accessor, target)) {
-          let position = varying.trajectory.evaluate (*accessor.now());
-          for other in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), PALACE_DISTANCE as u64*3), Some (& self.object)) {
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let mut target_location = varying.target.as_ref().and_then (| target |
+          (!is_destroyed (accessor, target)).as_some(
+            query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())
+          )
+        ).or_else (| | varying.target_location.clone());
+        if let Some(t) = target_location {
+          if distance (position, t) < 10*STRIDE {
+            target_location = None;
+          }
+        }
+        if target_location.is_none() {
+          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), AWARENESS_RANGE as u64), Some (& self.object));
+          let closest = nearby.into_iter().filter_map (| other | {
             let other_varying = query_ref (accessor, & other.varying);
             if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
-              let new_velocity = normalized_to (other_position - position, 10*STRIDE/SECOND);
-              //println!("vel {:?}", (&new_velocity));
-              modify_object (accessor, & self.object, | varying | {
-                varying.trajectory.set_velocity (*accessor.now(), new_velocity);
-                varying.target = Some (other.clone());
-              });
+              let other_distance = distance (position, other_position).max();
+              if other_distance <= AWARENESS_RANGE {
+                return Some ((other.clone(), other_distance, other_position));
+              }
             }
+            None
+          }).min_by_key (| t | t.1);
+          if let Some(closest) = closest {
+            target_location = Some(closest.2);
+            modify_object (accessor, & self.object, | varying | {
+              varying.target = Some (closest.0);
+              varying.target_location = None;
+            });
+          }
+          else {
+            let t = position + random_vector (&mut accessor.extended_now().id.to_rng(), AWARENESS_RANGE);
+            target_location = Some(t);
+            modify_object (accessor, & self.object, | varying | {
+              varying.target_location = Some (t);
+              varying.target = None;
+            });
           }
         }
-
+        let target_location = target_location.unwrap();
+        let new_velocity = normalized_to (target_location - position, 10*STRIDE/SECOND);
+        if new_velocity != varying.trajectory.velocity {
+          modify_object (accessor, & self.object, | varying | {
+            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
+          });
+        }
       },
       ActionType::Shoot => {
         let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
