@@ -71,6 +71,7 @@ type Vector = Vector2 <Coordinate>;
 
 const SECOND: Time = 1 << 20;
 const STRIDE: Coordinate = SECOND << 8;
+const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
 const PALACE_RADIUS: Coordinate = STRIDE*20;
 const GUILD_RADIUS: Coordinate = STRIDE*15;
 const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
@@ -153,6 +154,7 @@ enum ActionType {
   RecruitRanger,
   Think,
   Shoot,
+  Rest,
   Disappear,
 }
 
@@ -192,6 +194,7 @@ struct ObjectVarying {
   action: Option <Action>,
   target: Option <ObjectHandle>,
   target_location: Option <Vector>,
+  endurance: LinearTrajectory1,
   home: Option <ObjectHandle>,
   dependents: Vec <ObjectHandle>,
   prediction: Option <EventHandle>,
@@ -207,6 +210,7 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   action: None,
   target: None,
   target_location: None,
+  endurance: LinearTrajectory1::new (0, 0, 0),
   home: None,
   dependents: Vec::new(),
   prediction: None,
@@ -274,6 +278,11 @@ fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandl
   query_ref (accessor, & object.varying).team != query_ref (accessor, & other.varying).team
 }
 
+fn target_location <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Option <Vector> {
+  let varying = query_ref (accessor, & object.varying);
+  varying.target.as_ref().map (| target | query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())).or(varying.target_location)
+}
+
 
 fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVarying)>(accessor: &A, object: & ObjectHandle, f: F) {
   modify (accessor, & object.varying, |varying| {
@@ -292,6 +301,11 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
       };
       if let Some (action) = varying.action.as_ref() {
         consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.cost).unwrap(), id, CompleteAction {object: object.clone()}));
+      }
+      if let Some(target_location) = target_location (accessor, object) {
+        if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
+          consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
+        }
       }
       for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
         let other_varying = query_ref (accessor, & other.varying);
@@ -439,6 +453,7 @@ define_event! {
             home: Some (self.object.clone()),
             hitpoints: 5,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
+            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
             .. Default::default()
           },
         );
@@ -458,7 +473,7 @@ define_event! {
         }
         if target_location.is_none() {
           let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), AWARENESS_RANGE as u64), Some (& self.object));
-          let closest = nearby.into_iter().filter_map (| other | {
+          let closest = (varying.endurance.evaluate (*accessor.now()) < 10*SECOND).as_option().and_then (|_| varying.home.as_ref().map(|home| (home.clone(), query(accessor, &home.varying).trajectory.evaluate (*accessor.now())))).or_else(|| nearby.into_iter().filter_map (| other | {
             let other_varying = query_ref (accessor, & other.varying);
             if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
@@ -468,9 +483,9 @@ define_event! {
               }
             }
             None
-          }).min_by_key (| t | t.1);
+          }).min_by_key (| t | t.1).map (| triple | (triple.0, triple.2)));
           if let Some(closest) = closest {
-            target_location = Some(closest.2);
+            target_location = Some(closest.1);
             modify_object (accessor, & self.object, | varying | {
               varying.target = Some (closest.0);
               varying.target_location = None;
@@ -512,12 +527,34 @@ define_event! {
         destroy_object (accessor, & self.object);
         return
       },
+      ActionType::Rest => {
+        modify_object (accessor, & self.object, | varying | {
+          varying.endurance.set (*accessor.now(), 600*SECOND);
+        });
+      },
     }
     
     choose_action (accessor, &self.object);
   }
 }
 
+define_event! {
+  pub struct ReachTarget {object: ObjectHandle},
+  PersistentTypeId(0x26058edd2a3247aa),
+  fn execute (&self, accessor: &mut Accessor) {
+    modify_object (accessor, & self.object, | varying | {
+      varying.target = None;
+      varying.target_location = None;
+      varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
+      varying.action = Some(Action {
+        action_type: ActionType::Rest,
+        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
+        cost: 200*SECOND,
+        ..Default::default()
+      });
+    });
+  }
+}
 
 define_event! {
   pub struct Collide {objects: [ObjectHandle; 2]},
@@ -858,6 +895,10 @@ impl LinearTrajectory1 {
   fn constant (time: Time, position: Coordinate)->Self {
     LinearTrajectory {origin: time, position: position, velocity: 0}
   }
+}
+impl ::std::ops::Neg for LinearTrajectory1 {
+  type Output = LinearTrajectory1;
+  fn neg (self)-> LinearTrajectory1 {Self::new (self.origin, - self.position, - self.velocity)}
 }
 impl LinearTrajectory2 {
   fn when_escapes (&self, now: Time, bounds: [[Coordinate; 2]; 2])->Option <Time> {
