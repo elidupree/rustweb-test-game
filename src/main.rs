@@ -74,7 +74,8 @@ const STRIDE: Coordinate = SECOND << 8;
 const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
 const PALACE_RADIUS: Coordinate = STRIDE*20;
 const GUILD_RADIUS: Coordinate = STRIDE*15;
-const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*5;
+const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*10;
+const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
 const RANGER_RANGE: Coordinate = STRIDE*20;
 const AWARENESS_RANGE: Coordinate = STRIDE*100;
 
@@ -418,7 +419,7 @@ define_event! {
           object_type: ObjectType::Palace,
           team: team,
           hitpoints: 100,
-          trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, PALACE_DISTANCE*team as Coordinate*2 - PALACE_DISTANCE)),
+          trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
           .. Default::default()
         },
       );
@@ -433,17 +434,42 @@ define_event! {
     let varying = query (accessor, &self.object.varying) ;
     match varying.action.as_ref().unwrap().action_type.clone() {
       ActionType::BuildGuild => {
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let mut generator = accessor.extended_now().id.to_rng();
+        for attempt in 0..9 {
+          let guild = attempt < 5;
+          let minimum_distance = if guild { PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
+          
+          let target_position = position + random_vector (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
+          
+          if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
+          
+          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (target_position), minimum_distance as u64), Some (& self.object));
+          
+          if nearby.into_iter().all (| other | {
+            let other_varying = query_ref (accessor, & other.varying);
+            if is_building (& other_varying) && (guild || other_varying.object_type == ObjectType::Palace) {
+              let other_position = other_varying.trajectory.evaluate (*accessor.now());
+              let other_distance = distance (target_position, other_position).max();
+              return other_distance + TRIVIAL_DISTANCE >minimum_distance;
+            }
+            true
+          }) {
+            
         let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
           ObjectVarying {
-            object_type: ObjectType::Guild,
+            object_type: if guild {ObjectType::Guild} else {ObjectType::Palace},
             team: varying.team,
             home: Some (self.object.clone()),
             hitpoints: 20,
-            trajectory: LinearTrajectory2::constant (*accessor.now(), varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE)),
+            trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
             .. Default::default()
           },
         );
         modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+        break
+          }
+        }
       },
       ActionType::RecruitRanger => {
         let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
@@ -596,7 +622,7 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
     
     context.translate (@{game.display_radius as f64}, @{game.display_radius as f64});
   }
-  for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None) {
+  for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None) {
     let varying = query_ref (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64, center [1] as f64);
@@ -653,7 +679,7 @@ fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
     draw_game (& snapshot, & game);
     game.steward.forget_before (&now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
     continue_simulating = teams_alive.len() > 1;
   }
   if continue_simulating {
@@ -682,7 +708,7 @@ fn main() {
     last_ui_time: 0.0,
     time_speed: 1.0,
     display_center: Vector::new (0, 0),
-    display_radius: PALACE_DISTANCE*3/2,
+    display_radius: INITIAL_PALACE_DISTANCE*3/2,
   }));
   
   {
@@ -779,7 +805,7 @@ fn main() {
     last_ui_time: 0.0,
     time_speed: 1.0,
     display_center: Vector::new (0, 0),
-    display_radius: PALACE_DISTANCE*3/2,
+    display_radius: INITIAL_PALACE_DISTANCE*3/2,
   };
   
   loop {
@@ -787,7 +813,7 @@ fn main() {
     let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
     game.steward.forget_before (& game.now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), PALACE_DISTANCE as u64*2), None).into_iter().filter (| object | is_building (&query_ref (& snapshot, & object.varying))).map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().filter (| object | is_building (&query_ref (& snapshot, & object.varying))).map (| object | query_ref (& snapshot, & object.varying).team).collect();
     if teams_alive.len() <= 1 {
       scores [teams_alive.into_iter().next().unwrap()] += 1;
       println!("{:?}", scores);
