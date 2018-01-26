@@ -139,6 +139,7 @@ type EventHandle = <Steward as TimeSteward>::EventHandle;
 #[derive (Serialize, Deserialize, Debug)]
 pub struct Globals {
   detector: Timeline <DataHandle <Detector>>,
+  orders: [Timeline <Orders>; 2],
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -217,6 +218,11 @@ impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
   prediction: None,
   destroyed: false,
 }}}
+
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+struct Orders {
+  unit_destination: Option <Vector>,
+}
 
 
 
@@ -414,6 +420,7 @@ define_event! {
   fn execute (&self, accessor: &mut Accessor) {
     set (accessor, &accessor.globals().detector, SimpleGridDetector::new (accessor, Space, (STRIDE*50) as collisions::Coordinate));
     for team in 0..2 {
+      set (accessor, &accessor.globals().orders[team], Orders {unit_destination: None });
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           object_type: ObjectType::Palace,
@@ -519,9 +526,9 @@ define_event! {
           }
           else {
             let t = position + random_vector (&mut accessor.extended_now().id.to_rng(), AWARENESS_RANGE);
-            target_location = Some(t);
+            target_location = query (accessor, & accessor.globals().orders [varying.team]).unit_destination.or (Some(t));
             modify_object (accessor, & self.object, | varying | {
-              varying.target_location = Some (t);
+              varying.target_location = target_location;
               varying.target = None;
             });
           }
@@ -594,6 +601,13 @@ define_event! {
   }
 }
 
+define_event! {
+  pub struct ChangeOrders {team: usize, orders: Orders},
+  PersistentTypeId(0x4c9df89d55f6ab36),
+  fn execute (&self, accessor: &mut Accessor) {
+    set (accessor, &accessor.globals().orders[self.team], self.orders.clone());
+  }
+}
 
 
 struct Game {
@@ -605,6 +619,19 @@ struct Game {
   
   display_center: Vector,
   display_radius: Coordinate,
+}
+
+fn make_game(seed_id: DeterministicRandomId)->Game {
+  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline(), orders:[new_timeline(), new_timeline()]});
+  steward.insert_fiat_event (0, seed_id, Initialize {}).unwrap();
+  Game {
+    steward: steward,
+    now: 1,
+    last_ui_time: 0.0,
+    time_speed: 1.0,
+    display_center: Vector::new (0, 0),
+    display_radius: INITIAL_PALACE_DISTANCE*3/2,
+  }
 }
 
 
@@ -700,16 +727,7 @@ fn main() {
   
   let seed: u32 = js!{return window.localStorage && parseInt(window.localStorage.getItem ("random_seed")) || 0}.try_into().unwrap();
   
-  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
-  steward.insert_fiat_event (0, DeterministicRandomId::new (& (seed, 0xae06fcf3129d0685u64)), Initialize {}).unwrap();
-  let game = Rc::new (RefCell::new (Game {
-    steward: steward,
-    now: 1,
-    last_ui_time: 0.0,
-    time_speed: 1.0,
-    display_center: Vector::new (0, 0),
-    display_radius: INITIAL_PALACE_DISTANCE*3/2,
-  }));
+  let game = Rc::new (RefCell::new (make_game(DeterministicRandomId::new (& (seed, 0xae06fcf3129d0685u64)))));
   
   {
     let game = game.clone();
@@ -763,6 +781,32 @@ fn main() {
       ));
     }
   }
+  
+  
+  {
+    let game = game.clone();
+    let click_callback = move |x: f64,y: f64 | {
+      let mut game = game.borrow_mut();
+      let offset = Vector2::new (
+        x*game.display_radius as f64*2.0,
+        y*game.display_radius as f64*2.0
+      );
+      let location = game.display_center + Vector2::new (offset [0] as Coordinate, offset [1] as Coordinate);
+      let now = game.now;
+      game.steward.insert_fiat_event (now, DeterministicRandomId::new (& (now)), ChangeOrders {team: 1, orders: Orders {unit_destination: Some (location)}}).unwrap();
+    };
+    js! {
+      var callback = @{click_callback};
+      canvas.addEventListener ("click", function (event) {
+        var offset = canvas.getBoundingClientRect();
+        callback (
+          (event.clientX - offset.left)/offset.width - 0.5,
+          (event.clientY - offset.top)/offset.height - 0.5
+        );
+        event.preventDefault();
+      });
+    }
+  }
 
   js! {
     game_container.append($("<div>").append(
@@ -797,16 +841,8 @@ fn main() {
   
   loop {
   
-  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline()});
-  steward.insert_fiat_event (0, DeterministicRandomId::new (& (scores, 0xae06fcf3129d0685u64)), Initialize {}).unwrap();
-  let mut game = Game {
-    steward: steward,
-    now: 1,
-    last_ui_time: 0.0,
-    time_speed: 1.0,
-    display_center: Vector::new (0, 0),
-    display_radius: INITIAL_PALACE_DISTANCE*3/2,
-  };
+  
+  let mut game = Rc::new (RefCell::new (make_game(DeterministicRandomId::new (& (scores, 0xae06fcf3129d0685u64)))));
   
   loop {
     game.now += SECOND /100;
