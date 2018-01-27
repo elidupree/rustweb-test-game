@@ -10,6 +10,6 @@ serde_derive = "1"
 nalgebra = {version = "0.13", features = ["serde-serialize"]}
 array_ext = "0.2"
 dimensioned = "0.6"
-time_steward = {git = "https://github.com/elidupree/time-steward", branch = "space-game"}
+time_steward = {git = "https://github.com/elidupree/time-steward"}
 rand = "0.3"
 boolinator = "2.4"

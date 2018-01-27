@@ -619,6 +619,8 @@ struct Game {
   
   display_center: Vector,
   display_radius: Coordinate,
+  
+  selected_object: Option <ObjectHandle>,
 }
 
 fn make_game(seed_id: DeterministicRandomId)->Game {
@@ -631,6 +633,7 @@ fn make_game(seed_id: DeterministicRandomId)->Game {
     time_speed: 1.0,
     display_center: Vector::new (0, 0),
     display_radius: INITIAL_PALACE_DISTANCE*3/2,
+    selected_object: None,
   }
 }
 
@@ -654,12 +657,13 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64, center [1] as f64);
     let object_radius = radius (& varying) as f64;
+    let selected = game.selected_object.as_ref() == Some(&object);
     //println!("{:?}", (varying.trajectory, center, object_radius));
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
       context.strokeStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",1.0)";
-      context.lineWidth = @{object_radius/30.0 + 0.5/scale};
+      context.lineWidth = @{object_radius/30.0 + if selected {1.5} else {0.5}/scale};
       context.stroke();
       if (@{varying.team == 1}) {
         context.fillStyle = "rgba(255,0,0,0.2)";
@@ -686,6 +690,9 @@ fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       }
     }
   }
+  if let Some(selected) = game.selected_object.as_ref() {js! {
+    selected_info.text (@{format!("{:?}", **selected)});
+  }}
   js! {
     context.restore();
   }
@@ -793,7 +800,18 @@ fn main() {
       );
       let location = game.display_center + Vector2::new (offset [0] as Coordinate, offset [1] as Coordinate);
       let now = game.now;
-      game.steward.insert_fiat_event (now, DeterministicRandomId::new (& (now)), ChangeOrders {team: 1, orders: Orders {unit_destination: Some (location)}}).unwrap();
+      
+      //game.steward.insert_fiat_event (now, DeterministicRandomId::new (& (now)), ChangeOrders {team: 1, orders: Orders {unit_destination: Some (location)}}).unwrap();
+      
+      let snapshot = game.steward.snapshot_before (&now). unwrap ();
+      for object in Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (location), 0), None) {
+        let varying = query_ref (& snapshot, & object.varying);
+        let center = varying.trajectory.evaluate (now);
+        let object_radius = radius (& varying);
+        if distance (location, center).max() < object_radius {
+          game.selected_object = Some (object.clone());
+        }
+      }
     };
     js! {
       var callback = @{click_callback};
@@ -827,6 +845,7 @@ fn main() {
         text: " random seed (reload page to apply)",
       })
     ));
+    game_container.append(window.selected_info = $("<div>", {id: "selected_info"}));
   }
   
   web::window().request_animation_frame (move | time | main_loop (time, game));
