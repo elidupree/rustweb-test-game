@@ -14,6 +14,8 @@ use self::collisions::{NumDimensions, Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
 
 
+pub type Steward = steward_module::Steward <Basics>;
+pub type EventHandle = <Steward as TimeSteward>::EventHandle;
 pub type Timeline <T> = DataTimelineCell <SimpleTimeline <T, Steward>>;
 pub fn new_timeline <T: QueryResult> ()->Timeline <T> {DataTimelineCell::new (SimpleTimeline::new())}
 pub type Detector = SimpleGridDetector <Space>;
@@ -79,6 +81,10 @@ impl collisions::Space for Space {
 }
 
 
+// ##########################################
+// ######       data definitions      #######
+// ##########################################
+
 #[derive (Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Debug, Default)]
 pub struct Basics {}
 impl BasicsTrait for Basics {
@@ -87,9 +93,6 @@ impl BasicsTrait for Basics {
   type Types = (ListedType <CompleteAction>);
   const MAX_ITERATION: u32 = 12;
 }
-
-pub type Steward = steward_module::Steward <Basics>;
-pub type EventHandle = <Steward as TimeSteward>::EventHandle;
 
 #[derive (Serialize, Deserialize, Debug)]
 pub struct Globals {
@@ -181,6 +184,10 @@ pub struct Orders {
 
 
 
+// ####################################################
+// ###### object creation/modification protocol #######
+// ####################################################
+
 fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, source_object: Option <& ObjectHandle>, id: DeterministicRandomId, varying: ObjectVarying)->ObjectHandle {
   let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
   set (accessor, & created.varying, varying);
@@ -195,7 +202,6 @@ fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_obj
     DeterministicRandomId::new (& (accessor.extended_now().id, source_object.id, unique)), 
     varying)
 }
-
 
 fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let mut home = None;
@@ -232,6 +238,27 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   }
 }
 
+fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVarying)>(accessor: &A, object: & ObjectHandle, f: F) {
+  modify (accessor, & object.varying, |varying| {
+    (f)(varying)
+  });
+  object_changed (accessor, object);
+}
+
+fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be changed") ;
+  update_prediction (accessor, object);
+  Detector::changed_course (accessor, & get_detector (accessor), object);
+}
+
+
+
+
+
+// ##################################################
+// ###### inferred object attribute functions #######
+// ##################################################
+
 pub fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->bool {
   query_ref (accessor, & object.varying).destroyed
 }
@@ -245,13 +272,28 @@ pub fn target_location <A: Accessor <Steward = Steward>>(accessor: &A, object: &
   varying.target.as_ref().map (| target | query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())).or(varying.target_location)
 }
 
-
-fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVarying)>(accessor: &A, object: & ObjectHandle, f: F) {
-  modify (accessor, & object.varying, |varying| {
-    (f)(varying)
-  });
-  object_changed (accessor, object);
+pub fn radius (varying: & ObjectVarying)->Coordinate {
+  match varying.object_type {
+    ObjectType::Palace => PALACE_RADIUS,
+    ObjectType::Guild => GUILD_RADIUS,
+    ObjectType::Ranger => STRIDE/2,
+    ObjectType::Arrow => STRIDE/5,
+  }
 }
+pub fn is_building(varying: & ObjectVarying)->bool {
+  match varying.object_type {
+    ObjectType::Palace => true,
+    ObjectType::Guild => true,
+    _=>false,
+  }
+}
+
+
+
+
+// ##########################################
+// ######          behavior           #######
+// ##########################################
 
 fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
@@ -283,11 +325,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
     varying.prediction = earliest_prediction;
   });
 }
-fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be changed") ;
-  update_prediction (accessor, object);
-  Detector::changed_course (accessor, & get_detector (accessor), object);
-}
+
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
   modify_object (accessor, & object, | varying | {
@@ -352,21 +390,6 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
   });
 }
 
-pub fn radius (varying: & ObjectVarying)->Coordinate {
-  match varying.object_type {
-    ObjectType::Palace => PALACE_RADIUS,
-    ObjectType::Guild => GUILD_RADIUS,
-    ObjectType::Ranger => STRIDE/2,
-    ObjectType::Arrow => STRIDE/5,
-  }
-}
-pub fn is_building(varying: & ObjectVarying)->bool {
-  match varying.object_type {
-    ObjectType::Palace => true,
-    ObjectType::Guild => true,
-    _=>false,
-  }
-}
 
 
 define_event! {
