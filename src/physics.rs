@@ -144,9 +144,12 @@ impl PersistentlyIdentifiedType for Object {
 }
 pub type ObjectHandle = DataHandle <Object>;
 
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Derivative)]
+#[derivative (Default)]
 pub struct ObjectVarying {
+  #[derivative (Default (value = "ObjectType::Palace"))]
   pub object_type: ObjectType,
+  #[derivative (Default (value = "LinearTrajectory2::constant (0, Vector::new (0, 0))"))]
   pub trajectory: LinearTrajectory2,
   pub detector_data: Option <DetectorData>,
   pub team: usize,
@@ -154,28 +157,14 @@ pub struct ObjectVarying {
   pub action: Option <Action>,
   pub target: Option <ObjectHandle>,
   pub target_location: Option <Vector>,
+  #[derivative (Default (value = "LinearTrajectory1::new (0, 0, 0)"))]
   pub endurance: LinearTrajectory1,
   pub home: Option <ObjectHandle>,
   pub dependents: Vec <ObjectHandle>,
   pub prediction: Option <EventHandle>,
+  #[derivative (Default (value = "false"))]
   pub destroyed: bool,
 }
-
-impl Default for ObjectVarying {fn default()->Self {ObjectVarying {
-  object_type: ObjectType::Palace,
-  trajectory: LinearTrajectory2::constant (0, Vector::new (0, 0)),
-  detector_data: None,
-  team: 0,
-  hitpoints: 1,
-  action: None,
-  target: None,
-  target_location: None,
-  endurance: LinearTrajectory1::new (0, 0, 0),
-  home: None,
-  dependents: Vec::new(),
-  prediction: None,
-  destroyed: false,
-}}}
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Orders {
