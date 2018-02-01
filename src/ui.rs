@@ -268,7 +268,7 @@ pub fn run() {
   loop {
   
   
-  let mut game = Rc::new (RefCell::new (make_game(DeterministicRandomId::new (& (scores, 0xae06fcf3129d0685u64)))));
+  let mut game = make_game(DeterministicRandomId::new (& (scores, 0xae06fcf3129d0685u64)));
   
   loop {
     game.now += SECOND /100;
