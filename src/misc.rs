@@ -67,7 +67,7 @@ pub fn normalized_to (mut vector: Vector, length: Coordinate)->Vector {
   while vector [0].abs() > (1<<10) || vector [1].abs() > (1<<10) { vector /= 2; }
   vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
 }
-pub fn random_vector<G: Rng> (generator: &mut G, length: Coordinate)->Vector {
+pub fn random_vector_exact_length <G: Rng> (generator: &mut G, length: Coordinate)->Vector {
   loop {
     let vector = Vector::new (
       generator.gen_range (- length, length+1),
@@ -75,6 +75,17 @@ pub fn random_vector<G: Rng> (generator: &mut G, length: Coordinate)->Vector {
     let test_length = distance(vector, Vector::new (0, 0)).max();
     if test_length <= length && test_length*2 >= length {
       return normalized_to (vector, length);
+    }
+  }
+}
+pub fn random_vector_within_length <G: Rng> (generator: &mut G, length: Coordinate)->Vector {
+  loop {
+    let vector = Vector::new (
+      generator.gen_range (- length, length+1),
+      generator.gen_range (- length, length+1),);
+    let test_length = distance(vector, Vector::new (0, 0)).max();
+    if test_length <= length {
+      return vector;
     }
   }
 }

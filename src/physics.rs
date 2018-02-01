@@ -110,6 +110,8 @@ pub struct Globals {
 pub enum ObjectType {
   Palace,
   Guild,
+  Lair,
+  Beast,
   Ranger,
   Arrow,
 }
@@ -118,6 +120,7 @@ pub enum ObjectType {
 pub enum ActionType {
   BuildGuild,
   RecruitRanger,
+  SpawnBeast,
   Think,
   Shoot,
   Rest,
@@ -157,9 +160,12 @@ pub struct ObjectVarying {
   pub object_type: ObjectType,
   #[derivative (Default (value = "LinearTrajectory2::constant (0, Vector::new (0, 0))"))]
   pub trajectory: LinearTrajectory2,
+  pub radius: Coordinate,
   pub detector_data: Option <DetectorData>,
   pub team: usize,
   pub hitpoints: i64,
+  pub is_building: bool,
+  pub is_unit: bool,
   pub action: Option <Action>,
   pub target: Option <ObjectHandle>,
   pub target_location: Option <Vector>,
@@ -268,19 +274,10 @@ pub fn target_location <A: Accessor <Steward = Steward>>(accessor: &A, object: &
 }
 
 pub fn radius (varying: & ObjectVarying)->Coordinate {
-  match varying.object_type {
-    ObjectType::Palace => PALACE_RADIUS,
-    ObjectType::Guild => GUILD_RADIUS,
-    ObjectType::Ranger => STRIDE/2,
-    ObjectType::Arrow => STRIDE/5,
-  }
+  varying.radius
 }
 pub fn is_building(varying: & ObjectVarying)->bool {
-  match varying.object_type {
-    ObjectType::Palace => true,
-    ObjectType::Guild => true,
-    _=>false,
-  }
+  varying.is_building
 }
 
 
@@ -300,6 +297,15 @@ fn make_action <A: EventAccessor <Steward = Steward>>(accessor: &A, variability_
   details
 }
 
+fn make_palace (mut details: ObjectVarying)->ObjectVarying {
+  details.object_type = ObjectType::Palace;
+  details.hitpoints = 100;
+  details.radius = PALACE_RADIUS;
+  details.is_building = true;
+  details
+}
+
+
 fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
   modify (accessor, & object.varying, | varying | {
@@ -316,7 +322,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
           consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.achieve_cost).unwrap(), id, AchieveAction {object: object.clone()}));
         }
       }
-      if varying.object_type == ObjectType::Ranger {
+      if varying.is_unit {
         if let Some(target_location) = target_location (accessor, object) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
             consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
@@ -353,7 +359,12 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         achieve_cost: 10*STANDARD_ACTION_SECOND,
         ..Default::default()
       })),
-      ObjectType::Ranger => {
+      ObjectType::Lair => (varying.dependents.len() < 3).as_some (make_action (accessor, 35, Action {
+        action_type: ActionType::SpawnBeast,
+        achieve_cost: 25*STANDARD_ACTION_SECOND,
+        ..Default::default()
+      })),
+      ObjectType::Ranger | ObjectType::Beast => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
         
@@ -405,15 +416,27 @@ define_event! {
   pub struct Initialize {},
   PersistentTypeId(0x9a633852de46827f),
   fn execute (&self, accessor: &mut Accessor) {
+    let mut generator = accessor.extended_now().id.to_rng();
     set (accessor, &accessor.globals().detector, SimpleGridDetector::new (accessor, Space, (STRIDE*50) as collisions::Coordinate));
     for team in 0..2 {
       set (accessor, &accessor.globals().orders[team], Orders {unit_destination: None });
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
-        ObjectVarying {
-          object_type: ObjectType::Palace,
+        make_palace (ObjectVarying {
           team: team,
-          hitpoints: 100,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
+          .. Default::default()
+        }),
+      );
+    }
+    for index in 0..28 {
+      create_object_impl (accessor, None, DeterministicRandomId::new (& (index, 0xb2e085cd02f2f8dbu64)),
+        ObjectVarying {
+          object_type: ObjectType::Lair,
+          team: 6,
+          radius: STRIDE*8,
+          is_building: true,
+          hitpoints: 20,
+          trajectory: LinearTrajectory2::constant (*accessor.now(), Vector::new (0, 0) + random_vector_within_length (&mut generator, INITIAL_PALACE_DISTANCE)),
           .. Default::default()
         },
       );
@@ -433,9 +456,9 @@ define_event! {
         let mut generator = accessor.extended_now().id.to_rng();
         for attempt in 0..9 {
           let guild = attempt < 5;
-          let minimum_distance = if guild { PALACE_RADIUS + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
+          let minimum_distance = if guild { varying.radius + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
           
-          let target_position = position + random_vector (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
+          let target_position = position + random_vector_exact_length (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
           
           if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
           
@@ -450,19 +473,21 @@ define_event! {
             }
             true
           }) {
-            
-        let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
-          ObjectVarying {
-            object_type: if guild {ObjectType::Guild} else {ObjectType::Palace},
-            team: varying.team,
-            home: Some (self.object.clone()),
-            hitpoints: 20,
-            trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
-            .. Default::default()
-          },
-        );
-        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
-        break
+            let defaults = ObjectVarying {
+              object_type: ObjectType::Guild,
+              radius: GUILD_RADIUS,
+              is_building: true,
+              
+              team: varying.team,
+              home: Some (self.object.clone()),
+              trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
+              .. Default::default()
+            };
+            let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
+              if guild {defaults} else {make_palace (defaults)}
+            );
+            modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+            break
           }
         }
       },
@@ -473,7 +498,25 @@ define_event! {
             team: varying.team,
             home: Some (self.object.clone()),
             hitpoints: 5,
-            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector (&mut accessor.extended_now().id.to_rng(), GUILD_RADIUS + 2*STRIDE)),
+            radius: STRIDE/2,
+            is_unit: true,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
+            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
+            .. Default::default()
+          },
+        );
+        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+      },
+      ActionType::SpawnBeast => {
+        let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
+          ObjectVarying {
+            object_type: ObjectType::Beast,
+            team: varying.team,
+            home: Some (self.object.clone()),
+            hitpoints: 5,
+            radius: STRIDE*2/3,
+            is_unit: true,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
             .. Default::default()
           },
@@ -513,8 +556,8 @@ define_event! {
             });
           }
           else {
-            let t = position + random_vector (&mut accessor.extended_now().id.to_rng(), AWARENESS_RANGE);
-            target_location = query (accessor, & accessor.globals().orders [varying.team]).unit_destination.or (Some(t));
+            let t = position + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), AWARENESS_RANGE);
+            target_location = accessor.globals().orders.get(varying.team).and_then(|orders| query (accessor, orders).unit_destination).or (Some(t));
             modify_object (accessor, & self.object, | varying | {
               varying.target_location = target_location;
               varying.target = None;
@@ -540,6 +583,7 @@ define_event! {
           object_type: ObjectType::Arrow,
           team: varying.team,
           target: action.target,
+          radius: STRIDE/5,
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
           .. Default::default()
         });

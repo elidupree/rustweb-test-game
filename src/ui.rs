@@ -68,18 +68,18 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
     js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, Math.PI*2);
-      context.strokeStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",1.0)";
+      context.strokeStyle = "rgba("+@{varying.team as i32*255/6}+",0,"+@{(1-varying.team as i32)*255}+",1.0)";
       context.lineWidth = @{object_radius/30.0 + if selected {1.5} else {0.5}/scale};
       context.stroke();
       if (@{varying.team == 1}) {
-        context.fillStyle = "rgba(255,0,0,0.2)";
+        context.fillStyle = "rgba(42,0,0,0.2)";
         context.fill();
       }
     }
     if let Some(action) = varying.action.as_ref() {js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{object_radius}, 0, @{action.progress.evaluate (*accessor.now()) as f64/action.finish_cost as f64}*Math.PI*2);
-      context.fillStyle = "rgba("+@{varying.team as i32*255}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
+      context.fillStyle = "rgba("+@{varying.team as i32*255/6}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
       context.fill();
     }}
     if let Some(home) = varying.home.as_ref() {
