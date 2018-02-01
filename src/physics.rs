@@ -3,6 +3,7 @@ use super::*;
 use nalgebra::{Vector2};
 use rand::Rng;
 use boolinator::Boolinator;
+use std::cmp::max;
 
 
 use time_steward::{DeterministicRandomId};
@@ -23,10 +24,12 @@ pub type BoundingBox = collisions::BoundingBox<Space>;
 pub type DetectorData = collisions::simple_grid::DetectorDataPerObject<Space>;
 
 pub type Time = i64;
+pub type Progress = Time;
 pub type Coordinate = i64;
 pub type Vector = Vector2 <Coordinate>;
 
 pub const SECOND: Time = 1 << 20;
+
 pub const STRIDE: Coordinate = SECOND << 8;
 pub const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
 pub const PALACE_RADIUS: Coordinate = STRIDE*20;
@@ -35,6 +38,9 @@ pub const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*10;
 pub const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
 pub const RANGER_RANGE: Coordinate = STRIDE*20;
 pub const AWARENESS_RANGE: Coordinate = STRIDE*100;
+
+pub const STANDARD_ACTION_SPEED: Progress = 60;
+pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -90,7 +96,7 @@ pub struct Basics {}
 impl BasicsTrait for Basics {
   type Time = Time;
   type Globals = Globals;
-  type Types = (ListedType <CompleteAction>);
+  type Types = (ListedType <AchieveAction>);
   const MAX_ITERATION: u32 = 12;
 }
 
@@ -118,20 +124,20 @@ pub enum ActionType {
   Disappear,
 }
 
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Derivative)]
+#[derivative (Default)]
 pub struct Action {
+  #[derivative (Default (value = "ActionType::Think"))]
   pub action_type: ActionType,
   pub target: Option <ObjectHandle>,
+  #[derivative (Default (value = "LinearTrajectory1::constant(0,0)"))]
   pub progress: LinearTrajectory1,
-  pub cost: Coordinate,
+  pub achieve_cost: Progress,
+  #[derivative (Default (value = "0"))]
+  pub finish_cost: Progress,
+  #[derivative (Default (value = "false"))]
+  pub achieved: bool,
 }
-
-impl Default for Action {fn default()->Self {Action {
-  action_type: ActionType::Think,
-  target: None,
-  progress: LinearTrajectory1::new (0, 0, 0),
-  cost: 999*SECOND,
-}}}
 
 
 #[derive (Clone, Serialize, Deserialize, Debug)]
@@ -284,6 +290,16 @@ pub fn is_building(varying: & ObjectVarying)->bool {
 // ######          behavior           #######
 // ##########################################
 
+
+fn make_action <A: EventAccessor <Steward = Steward>>(accessor: &A, variability_percent: Progress, mut details: Action)->Action {
+  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
+  let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
+  details.achieve_cost = details.achieve_cost * modifier / 100;
+  details.finish_cost = max(details.achieve_cost, details.finish_cost * modifier / 100);
+  details.progress = LinearTrajectory1::new (*accessor.now(), 0, STANDARD_ACTION_SPEED);
+  details
+}
+
 fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   let id = DeterministicRandomId::new (& (0x93562b6a9bcdca8cu64, accessor.extended_now().id, object.id));
   modify (accessor, & object.varying, | varying | {
@@ -293,7 +309,12 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
         if earliest_prediction.as_ref().map_or (true, | earliest: & EventHandle | prediction.extended_time() < earliest.extended_time()) {earliest_prediction = Some (prediction);}
       };
       if let Some (action) = varying.action.as_ref() {
-        consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.cost).unwrap(), id, CompleteAction {object: object.clone()}));
+        if action.achieved {
+          consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.finish_cost).unwrap(), id, FinishAction {object: object.clone()}));
+        }
+        else {
+          consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.achieve_cost).unwrap(), id, AchieveAction {object: object.clone()}));
+        }
       }
       if let Some(target_location) = target_location (accessor, object) {
         if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
@@ -316,21 +337,18 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
 }
 
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
   modify_object (accessor, & object, | varying | {
     varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => (varying.dependents.len() < 6).as_some (Action {
+      ObjectType::Palace => (varying.dependents.len() < 6).as_some (make_action (accessor, 5, Action {
         action_type: ActionType::BuildGuild,
-        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
+        achieve_cost: 10*STANDARD_ACTION_SECOND,
         ..Default::default()
-      }),
-      ObjectType::Guild => (varying.dependents.len() < 4).as_some (Action {
+      })),
+      ObjectType::Guild => (varying.dependents.len() < 4).as_some (make_action (accessor, 5, Action {
         action_type: ActionType::RecruitRanger,
-        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 100*SECOND + generator.gen_range (- SECOND*5, SECOND*5),
+        achieve_cost: 10*STANDARD_ACTION_SECOND,
         ..Default::default()
-      }),
+      })),
       ObjectType::Ranger => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
@@ -350,31 +368,29 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         }).min_by_key (| t | t.1);
         
         if let Some(closest) = closest {
-          result = Some (Action {
+          result = Some (make_action (accessor, 5, Action {
             action_type: ActionType::Shoot,
             target: Some(closest.0),
-            progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-            cost: 10*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+            achieve_cost: STANDARD_ACTION_SECOND*6/10,
+            finish_cost: STANDARD_ACTION_SECOND*1,
             ..Default::default()
-          });
+          }));
           varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
           //varying.target = None;
         }
                   
-        if result.is_none() {result = Some(Action {
+        if result.is_none() {result = Some(make_action (accessor, 20, Action {
           action_type: ActionType::Think,
-          progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-          cost: 6*SECOND + generator.gen_range (- SECOND, SECOND),
+          achieve_cost: STANDARD_ACTION_SECOND*6/10,
           ..Default::default()}
-        )}
+        ))}
         result
       },
-      ObjectType::Arrow => Some(Action {
+      ObjectType::Arrow => Some(make_action (accessor, 5, Action {
         action_type: ActionType::Disappear,
-        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 5*SECOND + generator.gen_range (- SECOND/2, SECOND/2),
+        achieve_cost: STANDARD_ACTION_SECOND*1/2,
         ..Default::default()}
-      ),
+      )),
     };
   });
 }
@@ -402,11 +418,12 @@ define_event! {
 }
 
 define_event! {
-  pub struct CompleteAction {object: ObjectHandle},
+  pub struct AchieveAction {object: ObjectHandle},
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
     let varying = query (accessor, &self.object.varying) ;
-    match varying.action.as_ref().unwrap().action_type.clone() {
+    let action = varying.action.clone().unwrap();
+    match action.action_type {
       ActionType::BuildGuild => {
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut generator = accessor.extended_now().id.to_rng();
@@ -534,6 +551,21 @@ define_event! {
       },
     }
     
+    if action.progress.evaluate (*accessor.now()) >= action.finish_cost {
+      choose_action (accessor, & self.object);
+    }
+    else {
+      modify_object (accessor, & self.object, | varying | {
+        varying.action.as_mut().unwrap().achieved = true;
+      });
+    }
+  }
+}
+
+define_event! {
+  pub struct FinishAction {object: ObjectHandle},
+  PersistentTypeId(0x0242d450549f9245),
+  fn execute (&self, accessor: &mut Accessor) {
     choose_action (accessor, &self.object);
   }
 }
@@ -546,12 +578,11 @@ define_event! {
       varying.target = None;
       varying.target_location = None;
       varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
-      varying.action = Some(Action {
+      varying.action = Some(make_action (accessor, 5, Action {
         action_type: ActionType::Rest,
-        progress: LinearTrajectory1::new (*accessor.now(), 0, 10),
-        cost: 200*SECOND,
+        achieve_cost: 20*STANDARD_ACTION_SECOND,
         ..Default::default()
-      });
+      }));
     });
   }
 }
