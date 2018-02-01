@@ -372,7 +372,7 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         let closest = nearby.into_iter().filter_map (| other | {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
           let other_varying = query_ref (accessor, & other.varying);
-          if is_enemy (accessor, object, & other) && other_varying.object_type != ObjectType::Arrow {
+          if is_enemy (accessor, object, & other) && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
             let other_position = other_varying.trajectory.evaluate (*accessor.now());
             let other_distance = distance (position, other_position).max();
             if other_distance <= RANGER_RANGE + radius (& other_varying) {
@@ -539,7 +539,9 @@ define_event! {
           let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), AWARENESS_RANGE as u64), Some (& self.object));
           let closest = (varying.endurance.evaluate (*accessor.now()) < 10*SECOND).as_option().and_then (|_| varying.home.as_ref().map(|home| (home.clone(), query(accessor, &home.varying).trajectory.evaluate (*accessor.now())))).or_else(|| nearby.into_iter().filter_map (| other | {
             let other_varying = query_ref (accessor, & other.varying);
-            if is_enemy (accessor, & self.object, & other) && is_building (& other_varying) {
+            if is_enemy (accessor, & self.object, & other) && 
+              ((is_building (& other_varying) && other_varying.object_type != ObjectType::Lair) ||
+              other_varying.object_type == ObjectType::Beast) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
               let other_distance = distance (position, other_position).max();
               if other_distance <= AWARENESS_RANGE {
