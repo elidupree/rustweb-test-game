@@ -316,17 +316,21 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
           consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.achieve_cost).unwrap(), id, AchieveAction {object: object.clone()}));
         }
       }
-      if let Some(target_location) = target_location (accessor, object) {
-        if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
-          consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
+      if varying.object_type == ObjectType::Ranger {
+        if let Some(target_location) = target_location (accessor, object) {
+          if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
+            consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
+          }
         }
       }
-      for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
-        let other_varying = query_ref (accessor, & other.varying);
-        assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
-        if is_enemy (accessor, & object, & other) && (varying.object_type == ObjectType::Arrow) != (other_varying.object_type == ObjectType::Arrow) {
-          if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
-            consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
+      if varying.object_type == ObjectType::Arrow {
+        for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
+          if varying.target.as_ref() == Some(&other) {
+            let other_varying = query_ref (accessor, & other.varying);
+            assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+            if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &other_varying.trajectory, radius (& varying) + radius (& other_varying)) {
+              consider (accessor.create_prediction (time, id, Collide {objects: [object.clone(), other.clone()]}));
+            }
           }
         }
       }
@@ -535,6 +539,7 @@ define_event! {
         create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
           object_type: ObjectType::Arrow,
           team: varying.team,
+          target: action.target,
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
           .. Default::default()
         });
