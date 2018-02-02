@@ -25,6 +25,7 @@ pub type DetectorData = collisions::simple_grid::DetectorDataPerObject<Space>;
 
 pub type Time = i64;
 pub type Progress = Time;
+pub type Amount = Coordinate;
 pub type Coordinate = i64;
 pub type Vector = Vector2 <Coordinate>;
 
@@ -37,10 +38,14 @@ pub const GUILD_RADIUS: Coordinate = STRIDE*15;
 pub const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*10;
 pub const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
 pub const RANGER_RANGE: Coordinate = STRIDE*20;
-pub const AWARENESS_RANGE: Coordinate = STRIDE*100;
 
 pub const STANDARD_ACTION_SPEED: Progress = 60;
 pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
+
+pub const RANGER_COST: Amount = 50;
+pub const GUILD_COST: Amount = 150;
+pub const PALACE_COST: Amount = 1000;
+pub const BEAST_REWARD: Amount = 100;
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -161,9 +166,12 @@ pub struct ObjectVarying {
   #[derivative (Default (value = "LinearTrajectory2::constant (0, Vector::new (0, 0))"))]
   pub trajectory: LinearTrajectory2,
   pub radius: Coordinate,
+  pub attack_range: Coordinate,
+  pub awareness_range: Coordinate,
   pub detector_data: Option <DetectorData>,
   pub team: usize,
-  pub hitpoints: i64,
+  pub hitpoints: Amount,
+  pub food: Amount,
   pub is_building: bool,
   pub is_unit: bool,
   pub action: Option <Action>,
@@ -302,6 +310,7 @@ fn make_palace (mut details: ObjectVarying)->ObjectVarying {
   details.hitpoints = 100;
   details.radius = PALACE_RADIUS;
   details.is_building = true;
+  details.food = GUILD_COST;
   details
 }
 
@@ -349,14 +358,14 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
 fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   modify_object (accessor, & object, | varying | {
     varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => (varying.dependents.len() < 6).as_some (make_action (accessor, 5, Action {
+      ObjectType::Palace => Some (make_action (accessor, 5, Action {
         action_type: ActionType::BuildGuild,
-        achieve_cost: 10*STANDARD_ACTION_SECOND,
+        achieve_cost: 2*STANDARD_ACTION_SECOND,
         ..Default::default()
       })),
-      ObjectType::Guild => (varying.dependents.len() < 4).as_some (make_action (accessor, 5, Action {
+      ObjectType::Guild => Some (make_action (accessor, 5, Action {
         action_type: ActionType::RecruitRanger,
-        achieve_cost: 10*STANDARD_ACTION_SECOND,
+        achieve_cost: 2*STANDARD_ACTION_SECOND,
         ..Default::default()
       })),
       ObjectType::Lair => (varying.dependents.len() < 3).as_some (make_action (accessor, 35, Action {
@@ -368,14 +377,14 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut result = None;
         
-        let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), RANGER_RANGE as u64), Some (& object));
+        let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.attack_range as u64), Some (& object));
         let closest = nearby.into_iter().filter_map (| other | {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
           let other_varying = query_ref (accessor, & other.varying);
           if is_enemy (accessor, object, & other) && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
             let other_position = other_varying.trajectory.evaluate (*accessor.now());
             let other_distance = distance (position, other_position).max();
-            if other_distance <= RANGER_RANGE + radius (& other_varying) {
+            if other_distance <= varying.attack_range + radius (& other_varying) {
               return Some ((other.clone(), other_distance, other_position));
             }
           }
@@ -456,6 +465,8 @@ define_event! {
         let mut generator = accessor.extended_now().id.to_rng();
         for attempt in 0..9 {
           let guild = attempt < 5;
+          let cost = if guild {GUILD_COST} else {PALACE_COST};
+          if varying.food < cost {break;}
           let minimum_distance = if guild { varying.radius + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
           
           let target_position = position + random_vector_exact_length (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
@@ -477,6 +488,7 @@ define_event! {
               object_type: ObjectType::Guild,
               radius: GUILD_RADIUS,
               is_building: true,
+              food: RANGER_COST,
               
               team: varying.team,
               home: Some (self.object.clone()),
@@ -486,12 +498,16 @@ define_event! {
             let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
               if guild {defaults} else {make_palace (defaults)}
             );
-            modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+            modify_object (accessor, & self.object, | varying | {
+              varying.food -= cost;
+              varying.dependents.push (new);
+            });
             break
           }
         }
       },
       ActionType::RecruitRanger => {
+        if varying.food >= RANGER_COST && varying.dependents.len() < 4 {
         let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
           ObjectVarying {
             object_type: ObjectType::Ranger,
@@ -499,13 +515,26 @@ define_event! {
             home: Some (self.object.clone()),
             hitpoints: 5,
             radius: STRIDE/2,
+            attack_range: RANGER_RANGE,
+            awareness_range: 200*STRIDE,
             is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
             .. Default::default()
           },
         );
-        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
+        modify_object (accessor, & self.object, | varying | {
+          varying.food -= RANGER_COST;
+          varying.dependents.push (new);
+        });
+        }
+        else if varying.food > RANGER_COST {
+          let home = varying.home.as_ref().unwrap();
+          if !is_destroyed (accessor, home) {
+            modify_object (accessor, & self.object, | varying | varying.food = RANGER_COST);
+            modify_object (accessor, home, | other_varying | other_varying.food += varying.food - RANGER_COST);
+          }
+        }
       },
       ActionType::SpawnBeast => {
         let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
@@ -515,6 +544,8 @@ define_event! {
             home: Some (self.object.clone()),
             hitpoints: 5,
             radius: STRIDE*2/3,
+            attack_range: STRIDE*2,
+            awareness_range: STRIDE*30,
             is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
@@ -536,7 +567,7 @@ define_event! {
           }
         }
         if target_location.is_none() {
-          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), AWARENESS_RANGE as u64), Some (& self.object));
+          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (& self.object));
           let closest = (varying.endurance.evaluate (*accessor.now()) < 10*SECOND).as_option().and_then (|_| varying.home.as_ref().map(|home| (home.clone(), query(accessor, &home.varying).trajectory.evaluate (*accessor.now())))).or_else(|| nearby.into_iter().filter_map (| other | {
             let other_varying = query_ref (accessor, & other.varying);
             if is_enemy (accessor, & self.object, & other) && 
@@ -544,7 +575,7 @@ define_event! {
               other_varying.object_type == ObjectType::Beast) {
               let other_position = other_varying.trajectory.evaluate (*accessor.now());
               let other_distance = distance (position, other_position).max();
-              if other_distance <= AWARENESS_RANGE {
+              if other_distance <= varying.awareness_range {
                 return Some ((other.clone(), other_distance, other_position));
               }
             }
@@ -558,7 +589,7 @@ define_event! {
             });
           }
           else {
-            let t = position + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), AWARENESS_RANGE);
+            let t = position + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.awareness_range);
             target_location = accessor.globals().orders.get(varying.team).and_then(|orders| query (accessor, orders).unit_destination).or (Some(t));
             modify_object (accessor, & self.object, | varying | {
               varying.target_location = target_location;
