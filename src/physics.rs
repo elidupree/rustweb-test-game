@@ -338,7 +338,11 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
           }
         }
       }
-      if varying.object_type == ObjectType::Arrow {
+      let mut collide_target = varying.object_type == ObjectType::Arrow;
+      if varying.object_type == ObjectType::Ranger { if let Some(target) = varying.target.as_ref() { if !is_destroyed (accessor, target) && query_ref (accessor, & target.varying).hitpoints <= 0 {
+        collide_target = true;
+      }}}
+      if collide_target {
         for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
           if varying.target.as_ref() == Some(&other) {
             let other_varying = query_ref (accessor, & other.varying);
@@ -381,7 +385,7 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         let closest = nearby.into_iter().filter_map (| other | {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
           let other_varying = query_ref (accessor, & other.varying);
-          if is_enemy (accessor, object, & other) && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
+          if is_enemy (accessor, object, & other) && other_varying.hitpoints > 0 && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
             let other_position = other_varying.trajectory.evaluate (*accessor.now());
             let other_distance = distance (position, other_position).max();
             if other_distance <= varying.attack_range + radius (& other_varying) {
@@ -487,6 +491,7 @@ define_event! {
             let defaults = ObjectVarying {
               object_type: ObjectType::Guild,
               radius: GUILD_RADIUS,
+              hitpoints: 20,
               is_building: true,
               food: RANGER_COST,
               
@@ -627,6 +632,11 @@ define_event! {
         return
       },
       ActionType::Rest => {
+        let home = varying.home.as_ref().unwrap();
+        if !is_destroyed (accessor, home) {
+          modify_object (accessor, & self.object, | varying | varying.food = 0);
+          modify_object (accessor, home, | other_varying | other_varying.food += varying.food);
+        }
         modify_object (accessor, & self.object, | varying | {
           varying.endurance.set (*accessor.now(), 600*SECOND);
         });
@@ -657,14 +667,16 @@ define_event! {
   PersistentTypeId(0x26058edd2a3247aa),
   fn execute (&self, accessor: &mut Accessor) {
     modify_object (accessor, & self.object, | varying | {
+      if varying.target == varying.home {
+        varying.action = Some(make_action (accessor, 5, Action {
+          action_type: ActionType::Rest,
+          achieve_cost: 20*STANDARD_ACTION_SECOND,
+          ..Default::default()
+        }));
+      }
       varying.target = None;
       varying.target_location = None;
       varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
-      varying.action = Some(make_action (accessor, 5, Action {
-        action_type: ActionType::Rest,
-        achieve_cost: 20*STANDARD_ACTION_SECOND,
-        ..Default::default()
-      }));
     });
   }
 }
@@ -673,10 +685,20 @@ define_event! {
   pub struct Collide {objects: [ObjectHandle; 2]},
   PersistentTypeId(0xe35485dcd0277599),
   fn execute (&self, accessor: &mut Accessor) {
-    let (arrow, victim) = if query_ref (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
-    destroy_object (accessor, arrow);
+    //let (striker, victim) = if query_ref (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
+    let (striker, victim) = (& self.objects [0], & self.objects [1]);
     let mut dead = false;
-    modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = varying.hitpoints == 0;});
+    if query_ref (accessor, & striker.varying).object_type == ObjectType::Arrow {
+      destroy_object (accessor, striker);
+    }
+    else {
+      dead = true;
+      modify_object (accessor, striker, | varying | {
+        varying.target = None;
+        varying.food += BEAST_REWARD;
+      });
+    }
+    modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = dead || (varying.hitpoints == 0 && varying.object_type != ObjectType::Beast);});
     if dead {destroy_object (accessor, victim);}
   }
 }
