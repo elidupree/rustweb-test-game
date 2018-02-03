@@ -127,9 +127,10 @@ trait ActionTrait {
   fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {true}
   fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount;
   fn default_achieve_cost (&self)->Option <Progress>;
-  fn default_finish_cost (&self)->Progress {0}
+  fn default_finish_cost (&self)->Progress {self.default_achieve_cost ().expect ("we shouldn't be asking for the finish cost on an open-ended action")}
   fn cost_variability_percent (&self)->i64 {0}
-  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle);
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {panic!("reached undefined achieve() implementation, probably either trying to achieve an open-ended action or someone forgot to implement achieve() for something")}
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {None}
 }
 
 macro_rules! define_action_types_inner_call {
@@ -167,6 +168,9 @@ impl ActionTrait for Action {
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     define_action_types_inner_call! (achieve, self, [accessor, object], $($T,)*)
   }
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
+    define_action_types_inner_call! (target_location, self, [accessor, object], $($T,)*)
+  }
 }
   
   }
@@ -180,14 +184,17 @@ define_action_types! {
   Shoot,
   Rest,
   Disappear,
+  Pursue,
+  Collect,
 }
 pub struct Shoot {pub target: ObjectHandle,}
+pub struct Pursue {pub target: ObjectHandle, pub intention: Box <Action>}
 pub struct BuildGuild;
 pub struct RecruitRanger;
 pub struct SpawnBeast;
 pub struct Think;
 pub struct Rest;
-pub struct Disappear {pub time: Time,};
+pub struct Disappear {pub time: Time,}
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -222,6 +229,7 @@ pub struct ObjectVarying {
   pub radius: Coordinate,
   
   pub attack_range: Coordinate,
+  pub interrupt_range: Coordinate,
   pub awareness_range: Coordinate,
   pub speed: Coordinate,
   
@@ -269,7 +277,7 @@ fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, sourc
   let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
   set (accessor, & created.varying, varying);
   Detector::insert (accessor, & get_detector (accessor), & created, source_object);
-  choose_action (accessor, & created) ;
+  reconsider_action (accessor, & created) ;
   //object_changed (accessor, & created);
   created
 }
@@ -285,7 +293,7 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   modify (accessor, & object.varying, | varying | {
     varying.prediction = None;
     varying.synchronous_action = None;
-    varying.ongoing_action = None,
+    varying.ongoing_action = None;
     varying.destroyed = true;
     varying.dependents.clear();
     home = varying.home.take();
@@ -299,7 +307,7 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
       varying.dependents.retain (|a| a != object);
       reconsider = varying.action.is_none();
     });
-    if reconsider {choose_action (accessor, & home) ;}
+    if reconsider {reconsider_action (accessor, & home) ;}
   }}
   
   // fix any predictions of colliding with this
@@ -430,16 +438,40 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
   });
 }
 
-fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
-  let varying = query (accessor, &object.varying) ;
+fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle, distance: Coordinate)->Vec<Action > {
+  let varying = query_ref (accessor, &object.varying) ;
+  let other_varying = query_ref (accessor, & other.varying);
+  let mut result = Vec::new() ;
+  if varying.is_unit && other_varying.is_unit && other_varying.hitpoints >0 && distance < varying.attack_range {
+    result.push (Action::Shoot (Shoot {target: other.clone()}));
+  }
+  let move_and_act = | action | {
+    if distance <0 {action} else {Action::Pursue(Pursue {target: other.clone(), intention: action})}
+  }
+  if varying.object_type == ObjectType::Ranger && other_varying.object_type == ObjectType::Beast && other_varying.hitpoints == 0 {
+    result.push (move_and_act(Action::Collect (Collect {target: other.clone()})));
+  }
+  result
+}
+
+fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
+  let varying = query_ref (accessor, &object.varying) ;
   let mut choices = Vec::new();
+  let consider = | choices: &mut Vec<(Action, Amount)>, action | {
+    if action.is_legal (accessor, object) {
+      choices.push ((action, action.priority (accessor, object)));
+    }
+  };
   
   // first pass: cheapest calculations.
+  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref()) {
+    consider (&mut choices, current.clone());
+  }
   match varying.object_type.clone() {
-    ObjectType::Palace => choices.push (Action::BuildGuild(BuildGuild)),
-    ObjectType::Guild => choices.push (Action::RecruitRanger(RecruitRanger)),
-    ObjectType::Lair => choices.push (Action::SpawnBeast(SpawnBeast)),
-    ObjectType::Arrow => choices.push (Action::Disappear(Disappear {time: SECOND*1/2})),
+    ObjectType::Palace => consider (&mut choices, Action::BuildGuild(BuildGuild)),
+    ObjectType::Guild => consider (&mut choices, Action::RecruitRanger(RecruitRanger)),
+    ObjectType::Lair => consider (&mut choices, Action::SpawnBeast(SpawnBeast)),
+    ObjectType::Arrow => consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2})),
     _=>(),
   }
   
@@ -453,14 +485,16 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
   if varying.is_unit {
     let position = varying.trajectory.evaluate (*accessor.now());
         
-    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.attack_range as u64), Some (& object));
+    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.interrupt_range as u64), Some (& object));
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
       let other_varying = query_ref (accessor, & other.varying);
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
-      let other_distance = distance (position, other_position).max();
-      if other_distance <= varying.attack_range + radius (& other_varying) {
-        choices.extend (interaction_choices (accessor, object, other));
+      let other_distance = distance (position, other_position).max() - radius (& other_varying);
+      if other_distance <= varying.interrupt_range {
+        for choice in interaction_choices (accessor, object, other) {
+          consider (&mut choices, choice, other_distance);
+        }
       }
     }
   }
@@ -479,9 +513,11 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
       let other_varying = query_ref (accessor, & other.varying);
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
-      let other_distance = distance (position, other_position).max();
-      if other_distance > varying.attack_range + radius (& other_varying) && other_distance > varying.awareness_range + radius (& other_varying) {
-        choices.extend (interaction_choices (accessor, object, other));
+      let other_distance = distance (position, other_position).max() - radius (& other_varying);
+      if other_distance > varying.interrupt_range && other_distance > varying.awareness_range {
+        for choice in interaction_choices (accessor, object, other) {
+          consider (&mut choices, choice, other_distance);
+        }
       }
     }
   }
@@ -491,35 +527,8 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
   }
   
   uhh
+
   
-  
-        let closest = nearby.into_iter().filter_map (| other | {
-          assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
-          
-          if is_enemy (accessor, object, & other) && other_varying.hitpoints > 0 && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
-    
-        
-        if let Some(closest) = closest {
-          result = Some (make_action (accessor, 5, Action {
-            action_type: ActionType::Shoot,
-            target: Some(closest.0),
-            achieve_cost: STANDARD_ACTION_SECOND*6/10,
-            finish_cost: STANDARD_ACTION_SECOND*1,
-            ..Default::default()
-          }));
-          varying.trajectory.set_velocity (*accessor.now(), Vector::new (0, 0));
-          //varying.target = None;
-        }
-                  
-        if result.is_none() {result = Some(make_action (accessor, 20, Action {
-          action_type: ActionType::Think,
-          achieve_cost: STANDARD_ACTION_SECOND*6/10,
-          ..Default::default()}
-        ))}
-        result
-      },
-    };
-  });
 }
 
 fn action_velocity (accessor: &A, object: &ObjectHandle, action: Option<&Action>) {
@@ -540,6 +549,301 @@ fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &Obje
     varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.action.as_ref()));
   });
 }
+
+
+impl ActionTrait for BuildGuild {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    //hack: this action is still actually "attempt to build a guild or maybe a palace"
+    true
+  }
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    10
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ 2*STANDARD_ACTION_SECOND }
+  fn cost_variability_percent (&self)->i64 { 5 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    let varying = query (accessor, &object.varying) ;
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let mut generator = accessor.extended_now().id.to_rng();
+        for attempt in 0..9 {
+          let guild = attempt < 5;
+          let cost = if guild {GUILD_COST} else {PALACE_COST};
+          if varying.food < cost {break;}
+          let minimum_distance = if guild { varying.radius + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
+          
+          let target_position = position + random_vector_exact_length (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
+          
+          if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
+          
+          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (target_position), minimum_distance as u64), Some (object));
+          
+          if nearby.into_iter().all (| other | {
+            let other_varying = query_ref (accessor, & other.varying);
+            if is_building (& other_varying) && (guild || other_varying.object_type == ObjectType::Palace) {
+              let other_position = other_varying.trajectory.evaluate (*accessor.now());
+              let other_distance = distance (target_position, other_position).max();
+              return other_distance + TRIVIAL_DISTANCE >minimum_distance;
+            }
+            true
+          }) {
+            let defaults = ObjectVarying {
+              object_type: ObjectType::Guild,
+              radius: GUILD_RADIUS,
+              hitpoints: 20,
+              is_building: true,
+              food: RANGER_COST,
+              
+              team: varying.team,
+              home: Some (object.clone()),
+              trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
+              .. Default::default()
+            };
+            let new = create_object (accessor, object, 0x379661e69cdd5fe7,
+              if guild {defaults} else {make_palace (defaults)}
+            );
+            modify_object (accessor, object, | varying | {
+              varying.food -= cost;
+              varying.dependents.push (new);
+            });
+            break
+          }
+        }
+
+  }
+}
+
+impl ActionTrait for RecruitRanger {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    let varying = query_ref (accessor, &object.varying) ;
+    varying.food >= RANGER_COST && varying.dependents.len() < 4
+  }
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    10
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ 10*STANDARD_ACTION_SECOND }
+  fn cost_variability_percent (&self)->i64 { 5 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    let varying = query (accessor, &object.varying) ;
+    
+        let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
+          ObjectVarying {
+            object_type: ObjectType::Ranger,
+            team: varying.team,
+            home: Some (object.clone()),
+            hitpoints: 5,
+            radius: STRIDE/2,
+            attack_range: RANGER_RANGE,
+            awareness_range: 200*STRIDE,
+            is_unit: true,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
+            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
+            .. Default::default()
+          },
+        );
+        modify_object (accessor, object, | varying | {
+          varying.food -= RANGER_COST;
+          varying.dependents.push (new);
+        });
+
+  }
+}
+
+
+impl ActionTrait for SpawnBeast {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    10
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ 25*STANDARD_ACTION_SECOND }
+  fn cost_variability_percent (&self)->i64 { 35 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    let varying = query (accessor, &object.varying) ;
+    let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
+          ObjectVarying {
+            object_type: ObjectType::Beast,
+            team: varying.team,
+            home: Some (object.clone()),
+            hitpoints: 5,
+            radius: STRIDE*2/3,
+            attack_range: STRIDE*2,
+            awareness_range: STRIDE*30,
+            is_unit: true,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
+            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
+            .. Default::default()
+          },
+        );
+        modify_object (accessor, object, | varying | varying.dependents.push (new));
+  }
+}
+impl ActionTrait for Think {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    panic!("Think is a special action that's not supposed to be considered as an alternative to other actions")
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ STANDARD_ACTION_SECOND*6/10 }
+  fn cost_variability_percent (&self)->i64 { 20 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    //let varying = query (accessor, &object.varying);
+    
+  }
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
+    let varying = query_ref (accessor, &object.varying) ;
+    varying.ongoing_action.target_location()
+  }
+}
+impl ActionTrait for Shoot {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    COMBAT_PRIORITY + 10
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ STANDARD_ACTION_SECOND*6/10 }
+  fn default_finish_cost (&self)->Option <Progress>{ STANDARD_ACTION_SECOND*10/10 }
+  fn cost_variability_percent (&self)->i64 { 5 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    let varying = query (accessor, &object.varying) ;
+    
+        let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
+        if !is_destroyed (accessor, target) {
+        //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let other_position = query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now());
+        let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
+        create_object (accessor, object, 0x27706762e4201474, ObjectVarying {
+          object_type: ObjectType::Arrow,
+          team: varying.team,
+          target: action.target,
+          radius: STRIDE/5,
+          trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
+          .. Default::default()
+        });
+        }
+
+  }
+}
+impl ActionTrait for Disappear {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    COMBAT_PRIORITY + 10
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ self.time*STANDARD_ACTION_SPEED }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    destroy_object (accessor, object);
+  }
+}
+
+impl ActionTrait for Pursue {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    let varying = query_ref (accessor, &object.varying) ;
+    let location = varying.trajectory.evaluate (*accessor.now());
+    let target = self.target_location();
+    let time_to_reach = distance (location, target).max()/varying.speed;
+    let time_to_perform = self.intention.default_finish_cost()/STANDARD_ACTION_SPEED;
+    self.intention.priority()*time_to_perform/(time_to_perform + time_to_reach)
+  }
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
+    let varying = query_ref (accessor, &object.varying) ;
+    query_ref (accessor, & self.target.varying).trajectory.evaluate (*accessor.now())
+  }
+}
+
+impl ActionTrait for Collect {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    20
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ STANDARD_ACTION_SECOND*10/10 }
+  fn cost_variability_percent (&self)->i64 { 10 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    destroy_object (accessor, & self.target);
+    modify_object (accessor, object, | varying | {
+      varying.food += BEAST_REWARD;
+    });
+  }
+}
+
+impl ActionTrait for Rest {
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    20
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{ STANDARD_ACTION_SECOND*20 }
+  fn cost_variability_percent (&self)->i64 { 5 }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    let varying = query (accessor, &object.varying) ;
+    let home = varying.home.as_ref().unwrap();
+        if !is_destroyed (accessor, home) {
+          modify_object (accessor, & self.object, | varying | varying.food = 0);
+          modify_object (accessor, home, | other_varying | other_varying.food += varying.food);
+        }
+        modify_object (accessor, & self.object, | varying | {
+          varying.endurance.set (*accessor.now(), 600*SECOND);
+        });
+  }
+}
+
+
+/*
+
+      ActionType::RecruitRanger => {
+        if varying.food >= RANGER_COST && varying.dependents.len() < 4 {        }
+        else if varying.food > RANGER_COST {
+          let home = varying.home.as_ref().unwrap();
+          if !is_destroyed (accessor, home) {
+            modify_object (accessor, object, | varying | varying.food = RANGER_COST);
+            modify_object (accessor, home, | other_varying | other_varying.food += varying.food - RANGER_COST);
+          }
+        }
+      },
+
+      ActionType::Think => {
+        let position = varying.trajectory.evaluate (*accessor.now());
+        let mut target_location = varying.target.as_ref().and_then (| target |
+          (!is_destroyed (accessor, target)).as_some(
+            query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())
+          )
+        ).or_else (| | varying.target_location.clone());
+        if let Some(t) = target_location {
+          if distance (position, t) < 10*STRIDE {
+            target_location = None;
+          }
+        }
+        if target_location.is_none() {
+          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (object));
+          let closest = (varying.endurance.evaluate (*accessor.now()) < 10*SECOND).as_option().and_then (|_| varying.home.as_ref().map(|home| (home.clone(), query(accessor, &home.varying).trajectory.evaluate (*accessor.now())))).or_else(|| nearby.into_iter().filter_map (| other | {
+            let other_varying = query_ref (accessor, & other.varying);
+            if is_enemy (accessor, object, & other) && 
+              ((is_building (& other_varying) && other_varying.object_type != ObjectType::Lair) ||
+              other_varying.object_type == ObjectType::Beast) {
+              let other_position = other_varying.trajectory.evaluate (*accessor.now());
+              let other_distance = distance (position, other_position).max();
+              if other_distance <= varying.awareness_range {
+                return Some ((other.clone(), other_distance, other_position));
+              }
+            }
+            None
+          }).min_by_key (| t | t.1).map (| triple | (triple.0, triple.2)));
+          if let Some(closest) = closest {
+            target_location = Some(closest.1);
+            modify_object (accessor, object, | varying | {
+              varying.target = Some (closest.0);
+              varying.target_location = None;
+            });
+          }
+          else {
+            let t = position + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.awareness_range);
+            target_location = accessor.globals().orders.get(varying.team).and_then(|orders| query (accessor, orders).unit_destination).or (Some(t));
+            modify_object (accessor, & self.object, | varying | {
+              varying.target_location = target_location;
+              varying.target = None;
+            });
+          }
+        }
+        let target_location = target_location.unwrap();
+        let new_velocity = normalized_to (target_location - position, 10*STRIDE/SECOND);
+        if new_velocity != varying.trajectory.velocity {
+          modify_object (accessor, & self.object, | varying | {
+            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
+          });
+        }
+      },
+    }
+*/
+
 
 
 define_event! {
@@ -578,190 +882,11 @@ define_event! {
   pub struct AchieveAction {object: ObjectHandle},
   PersistentTypeId(0x3995cd28e2829c09),
   fn execute (&self, accessor: &mut Accessor) {
-    let varying = query (accessor, &self.object.varying) ;
-    let action = varying.action.clone().unwrap();
-    match action.action_type {
-      ActionType::BuildGuild => {
-        let position = varying.trajectory.evaluate (*accessor.now());
-        let mut generator = accessor.extended_now().id.to_rng();
-        for attempt in 0..9 {
-          let guild = attempt < 5;
-          let cost = if guild {GUILD_COST} else {PALACE_COST};
-          if varying.food < cost {break;}
-          let minimum_distance = if guild { varying.radius + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
-          
-          let target_position = position + random_vector_exact_length (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
-          
-          if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
-          
-          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (target_position), minimum_distance as u64), Some (& self.object));
-          
-          if nearby.into_iter().all (| other | {
-            let other_varying = query_ref (accessor, & other.varying);
-            if is_building (& other_varying) && (guild || other_varying.object_type == ObjectType::Palace) {
-              let other_position = other_varying.trajectory.evaluate (*accessor.now());
-              let other_distance = distance (target_position, other_position).max();
-              return other_distance + TRIVIAL_DISTANCE >minimum_distance;
-            }
-            true
-          }) {
-            let defaults = ObjectVarying {
-              object_type: ObjectType::Guild,
-              radius: GUILD_RADIUS,
-              hitpoints: 20,
-              is_building: true,
-              food: RANGER_COST,
-              
-              team: varying.team,
-              home: Some (self.object.clone()),
-              trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
-              .. Default::default()
-            };
-            let new = create_object (accessor, & self.object, 0x379661e69cdd5fe7,
-              if guild {defaults} else {make_palace (defaults)}
-            );
-            modify_object (accessor, & self.object, | varying | {
-              varying.food -= cost;
-              varying.dependents.push (new);
-            });
-            break
-          }
-        }
-      },
-      ActionType::RecruitRanger => {
-        if varying.food >= RANGER_COST && varying.dependents.len() < 4 {
-        let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
-          ObjectVarying {
-            object_type: ObjectType::Ranger,
-            team: varying.team,
-            home: Some (self.object.clone()),
-            hitpoints: 5,
-            radius: STRIDE/2,
-            attack_range: RANGER_RANGE,
-            awareness_range: 200*STRIDE,
-            is_unit: true,
-            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
-            .. Default::default()
-          },
-        );
-        modify_object (accessor, & self.object, | varying | {
-          varying.food -= RANGER_COST;
-          varying.dependents.push (new);
-        });
-        }
-        else if varying.food > RANGER_COST {
-          let home = varying.home.as_ref().unwrap();
-          if !is_destroyed (accessor, home) {
-            modify_object (accessor, & self.object, | varying | varying.food = RANGER_COST);
-            modify_object (accessor, home, | other_varying | other_varying.food += varying.food - RANGER_COST);
-          }
-        }
-      },
-      ActionType::SpawnBeast => {
-        let new = create_object (accessor, & self.object, 0x91db5029ba8b0a4e,
-          ObjectVarying {
-            object_type: ObjectType::Beast,
-            team: varying.team,
-            home: Some (self.object.clone()),
-            hitpoints: 5,
-            radius: STRIDE*2/3,
-            attack_range: STRIDE*2,
-            awareness_range: STRIDE*30,
-            is_unit: true,
-            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
-            .. Default::default()
-          },
-        );
-        modify_object (accessor, & self.object, | varying | varying.dependents.push (new));
-      },
-      ActionType::Think => {
-        let position = varying.trajectory.evaluate (*accessor.now());
-        let mut target_location = varying.target.as_ref().and_then (| target |
-          (!is_destroyed (accessor, target)).as_some(
-            query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())
-          )
-        ).or_else (| | varying.target_location.clone());
-        if let Some(t) = target_location {
-          if distance (position, t) < 10*STRIDE {
-            target_location = None;
-          }
-        }
-        if target_location.is_none() {
-          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (& self.object));
-          let closest = (varying.endurance.evaluate (*accessor.now()) < 10*SECOND).as_option().and_then (|_| varying.home.as_ref().map(|home| (home.clone(), query(accessor, &home.varying).trajectory.evaluate (*accessor.now())))).or_else(|| nearby.into_iter().filter_map (| other | {
-            let other_varying = query_ref (accessor, & other.varying);
-            if is_enemy (accessor, & self.object, & other) && 
-              ((is_building (& other_varying) && other_varying.object_type != ObjectType::Lair) ||
-              other_varying.object_type == ObjectType::Beast) {
-              let other_position = other_varying.trajectory.evaluate (*accessor.now());
-              let other_distance = distance (position, other_position).max();
-              if other_distance <= varying.awareness_range {
-                return Some ((other.clone(), other_distance, other_position));
-              }
-            }
-            None
-          }).min_by_key (| t | t.1).map (| triple | (triple.0, triple.2)));
-          if let Some(closest) = closest {
-            target_location = Some(closest.1);
-            modify_object (accessor, & self.object, | varying | {
-              varying.target = Some (closest.0);
-              varying.target_location = None;
-            });
-          }
-          else {
-            let t = position + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.awareness_range);
-            target_location = accessor.globals().orders.get(varying.team).and_then(|orders| query (accessor, orders).unit_destination).or (Some(t));
-            modify_object (accessor, & self.object, | varying | {
-              varying.target_location = target_location;
-              varying.target = None;
-            });
-          }
-        }
-        let target_location = target_location.unwrap();
-        let new_velocity = normalized_to (target_location - position, 10*STRIDE/SECOND);
-        if new_velocity != varying.trajectory.velocity {
-          modify_object (accessor, & self.object, | varying | {
-            varying.trajectory.set_velocity (*accessor.now(), new_velocity);
-          });
-        }
-      },
-      ActionType::Shoot => {
-        let target = varying.action.as_ref().unwrap().target.as_ref().unwrap();
-        if !is_destroyed (accessor, target) {
-        //destroy_object (accessor, varying.action.as_ref().unwrap().target.as_ref().unwrap());
-        let position = varying.trajectory.evaluate (*accessor.now());
-        let other_position = query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now());
-        let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
-        create_object (accessor, & self.object, 0x27706762e4201474, ObjectVarying {
-          object_type: ObjectType::Arrow,
-          team: varying.team,
-          target: action.target,
-          radius: STRIDE/5,
-          trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
-          .. Default::default()
-        });
-        }
-      },
-      ActionType::Disappear => {
-        destroy_object (accessor, & self.object);
-        return
-      },
-      ActionType::Rest => {
-        let home = varying.home.as_ref().unwrap();
-        if !is_destroyed (accessor, home) {
-          modify_object (accessor, & self.object, | varying | varying.food = 0);
-          modify_object (accessor, home, | other_varying | other_varying.food += varying.food);
-        }
-        modify_object (accessor, & self.object, | varying | {
-          varying.endurance.set (*accessor.now(), 600*SECOND);
-        });
-      },
-    }
-    
+    let action = query_ref(accessor, &self.object.varying).synchronous_action.clone().unwrap();
+    action.achieve (accessor, &self.object);
+    if is_destroyed (accessor, & self.object) {return;}
     if action.progress.evaluate (*accessor.now()) >= action.finish_cost {
-      choose_action (accessor, & self.object);
+      reconsider_action (accessor, & self.object);
     }
     else {
       modify_object (accessor, & self.object, | varying | {
@@ -775,7 +900,7 @@ define_event! {
   pub struct FinishAction {object: ObjectHandle},
   PersistentTypeId(0x0242d450549f9245),
   fn execute (&self, accessor: &mut Accessor) {
-    choose_action (accessor, &self.object);
+    reconsider_action (accessor, &self.object);
   }
 }
 
@@ -805,16 +930,7 @@ define_event! {
     //let (striker, victim) = if query_ref (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
     let (striker, victim) = (& self.objects [0], & self.objects [1]);
     let mut dead = false;
-    if query_ref (accessor, & striker.varying).object_type == ObjectType::Arrow {
-      destroy_object (accessor, striker);
-    }
-    else {
-      dead = true;
-      modify_object (accessor, striker, | varying | {
-        varying.target = None;
-        varying.food += BEAST_REWARD;
-      });
-    }
+    destroy_object (accessor, striker);
     modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = dead || (varying.hitpoints == 0 && varying.object_type != ObjectType::Beast);});
     if dead {destroy_object (accessor, victim);}
   }
