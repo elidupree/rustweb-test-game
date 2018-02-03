@@ -119,10 +119,60 @@ pub enum ObjectType {
   Beast,
   Ranger,
   Arrow,
+  Peasant,
 }
 
+trait ActionTrait {
+  #[allow (unused_variables)]
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {true}
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount;
+  fn default_achieve_cost (&self)->Option <Progress>;
+  fn default_finish_cost (&self)->Progress {0}
+  fn cost_variability_percent (&self)->i64 {0}
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle);
+}
+
+macro_rules! define_action_types_inner_call {
+  ($method:ident, $self_hack:ident, [$($arg: ident),*], $($T: ident,)*) => {
+    match $self_hack.action_type {
+      $($T(ref data) => data.priority ($($arg),*))*
+    }
+  }
+}
+
+macro_rules! define_action_types {
+  ($($T: ident,)*) => {
+
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub enum ActionType {
+pub enum Action {
+  $($T($T),)*
+}
+
+impl ActionTrait for Action {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    define_action_types_inner_call! (is_legal, self, [accessor, object], $($T,)*)
+  }
+  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    define_action_types_inner_call! (priority, self, [accessor, object], $($T,)*)
+  }
+  fn default_achieve_cost (&self)->Option <Progress>{
+    define_action_types_inner_call! (default_achieve_cost, self, [], $($T,)*)
+  }
+  fn default_finish_cost (&self)->Progress {
+    define_action_types_inner_call! (default_finish_cost, self, [], $($T,)*)
+  }
+  fn cost_variability_percent (&self)->i64 {
+    define_action_types_inner_call! (default_cost_variability_percent, self, [], $($T,)*)
+  }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    define_action_types_inner_call! (achieve, self, [accessor, object], $($T,)*)
+  }
+}
+  
+  }
+}
+
+define_action_types! {
   BuildGuild,
   RecruitRanger,
   SpawnBeast,
@@ -131,21 +181,24 @@ pub enum ActionType {
   Rest,
   Disappear,
 }
+pub struct Shoot {pub target: ObjectHandle,}
+pub struct BuildGuild;
+pub struct RecruitRanger;
+pub struct SpawnBeast;
+pub struct Think;
+pub struct Rest;
+pub struct Disappear {pub time: Time,};
 
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Derivative)]
-#[derivative (Default)]
-pub struct Action {
-  #[derivative (Default (value = "ActionType::Think"))]
+
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct SynchronousAction {
   pub action_type: ActionType,
-  pub target: Option <ObjectHandle>,
-  #[derivative (Default (value = "LinearTrajectory1::constant(0,0)"))]
   pub progress: LinearTrajectory1,
   pub achieve_cost: Progress,
-  #[derivative (Default (value = "0"))]
   pub finish_cost: Progress,
-  #[derivative (Default (value = "false"))]
   pub achieved: bool,
 }
+
 
 
 #[derive (Clone, Serialize, Deserialize, Debug)]
@@ -163,27 +216,42 @@ pub type ObjectHandle = DataHandle <Object>;
 pub struct ObjectVarying {
   #[derivative (Default (value = "ObjectType::Palace"))]
   pub object_type: ObjectType,
+  
   #[derivative (Default (value = "LinearTrajectory2::constant (0, Vector::new (0, 0))"))]
   pub trajectory: LinearTrajectory2,
   pub radius: Coordinate,
+  
   pub attack_range: Coordinate,
   pub awareness_range: Coordinate,
-  pub detector_data: Option <DetectorData>,
+  pub speed: Coordinate,
+  
   pub team: usize,
+  
   pub hitpoints: Amount,
-  pub food: Amount,
-  pub is_building: bool,
-  pub is_unit: bool,
-  pub action: Option <Action>,
-  pub target: Option <ObjectHandle>,
-  pub target_location: Option <Vector>,
+  pub max_hitpoints: Amount,
   #[derivative (Default (value = "LinearTrajectory1::new (0, 0, 0)"))]
   pub endurance: LinearTrajectory1,
+  pub max_endurance: Amount,
+  
+  pub food: Amount,
+  
+  pub is_building: bool,
+  pub is_unit: bool,
+  
+  pub synchronous_action: Option <SynchronousAction>,
+  pub ongoing_action: Option <Action>,
+  
+  //pub target: Option <ObjectHandle>,
+  //pub target_location: Option <Vector>,
+  
   pub home: Option <ObjectHandle>,
   pub dependents: Vec <ObjectHandle>,
-  pub prediction: Option <EventHandle>,
+  
   #[derivative (Default (value = "false"))]
   pub destroyed: bool,
+  
+  pub prediction: Option <EventHandle>,
+  pub detector_data: Option <DetectorData>,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -216,8 +284,10 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   let mut home = None;
   modify (accessor, & object.varying, | varying | {
     varying.prediction = None;
-    varying.action = None;
+    varying.synchronous_action = None;
+    varying.ongoing_action = None,
     varying.destroyed = true;
+    varying.dependents.clear();
     home = varying.home.take();
   });
   let nearby = Detector::objects_near_object (accessor, & get_detector (accessor), object);
@@ -296,8 +366,9 @@ pub fn is_building(varying: & ObjectVarying)->bool {
 // ##########################################
 
 
-fn make_action <A: EventAccessor <Steward = Steward>>(accessor: &A, variability_percent: Progress, mut details: Action)->Action {
+fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, action: Action)->SynchronousAction {
   let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
+  let variability_percent = action.cost_variability_percent();
   let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
   details.achieve_cost = details.achieve_cost * modifier / 100;
   details.finish_cost = max(details.achieve_cost, details.finish_cost * modifier / 100);
@@ -323,7 +394,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
       let mut consider = | prediction: EventHandle | {
         if earliest_prediction.as_ref().map_or (true, | earliest: & EventHandle | prediction.extended_time() < earliest.extended_time()) {earliest_prediction = Some (prediction);}
       };
-      if let Some (action) = varying.action.as_ref() {
+      if let Some (action) = varying.synchronous_action.as_ref() {
         if action.achieved {
           consider (accessor.create_prediction (action.progress.when_reaches (*accessor.now(), action.finish_cost).unwrap(), id, FinishAction {object: object.clone()}));
         }
@@ -339,9 +410,9 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
         }
       }
       let mut collide_target = varying.object_type == ObjectType::Arrow;
-      if varying.object_type == ObjectType::Ranger { if let Some(target) = varying.target.as_ref() { if !is_destroyed (accessor, target) && query_ref (accessor, & target.varying).hitpoints <= 0 {
+      /*if varying.object_type == ObjectType::Ranger { if let Some(target) = varying.target.as_ref() { if !is_destroyed (accessor, target) && query_ref (accessor, & target.varying).hitpoints <= 0 {
         collide_target = true;
-      }}}
+      }}}*/
       if collide_target {
         for other in Detector::objects_near_object (accessor, & get_detector (accessor), object) {
           if varying.target.as_ref() == Some(&other) {
@@ -359,41 +430,74 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
   });
 }
 
-fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  modify_object (accessor, & object, | varying | {
-    varying.action = match varying.object_type.clone() {
-      ObjectType::Palace => Some (make_action (accessor, 5, Action {
-        action_type: ActionType::BuildGuild,
-        achieve_cost: 2*STANDARD_ACTION_SECOND,
-        ..Default::default()
-      })),
-      ObjectType::Guild => Some (make_action (accessor, 5, Action {
-        action_type: ActionType::RecruitRanger,
-        achieve_cost: 2*STANDARD_ACTION_SECOND,
-        ..Default::default()
-      })),
-      ObjectType::Lair => (varying.dependents.len() < 3).as_some (make_action (accessor, 35, Action {
-        action_type: ActionType::SpawnBeast,
-        achieve_cost: 25*STANDARD_ACTION_SECOND,
-        ..Default::default()
-      })),
-      ObjectType::Ranger | ObjectType::Beast => {
-        let position = varying.trajectory.evaluate (*accessor.now());
-        let mut result = None;
+fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
+  let varying = query (accessor, &object.varying) ;
+  let mut choices = Vec::new();
+  
+  // first pass: cheapest calculations.
+  match varying.object_type.clone() {
+    ObjectType::Palace => choices.push (Action::BuildGuild(BuildGuild)),
+    ObjectType::Guild => choices.push (Action::RecruitRanger(RecruitRanger)),
+    ObjectType::Lair => choices.push (Action::SpawnBeast(SpawnBeast)),
+    ObjectType::Arrow => choices.push (Action::Disappear(Disappear {time: SECOND*1/2})),
+    _=>(),
+  }
+  
+  if best priority >COMBAT_PRIORITY {
+    return best
+  }
+  
+  // second pass: scan surroundings for stuff.
+  // Commonly used for characters on long journeys to notice nearby interesting stuff.
+  // Optimization: currently, only units can interact with nearby stuff
+  if varying.is_unit {
+    let position = varying.trajectory.evaluate (*accessor.now());
         
-        let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.attack_range as u64), Some (& object));
+    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.attack_range as u64), Some (& object));
+    for other in nearby {
+      assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+      let other_varying = query_ref (accessor, & other.varying);
+      let other_position = other_varying.trajectory.evaluate (*accessor.now());
+      let other_distance = distance (position, other_position).max();
+      if other_distance <= varying.attack_range + radius (& other_varying) {
+        choices.extend (interaction_choices (accessor, object, other));
+      }
+    }
+  }
+    
+  if best priority >0 {
+    return best
+  }
+  
+  // third pass: there's nothing to do nearby, so it's finally worth it to pay the larger cost of searching for a distant task
+  
+  if varying.is_unit {
+    let position = varying.trajectory.evaluate (*accessor.now());
+        
+    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (& object));
+    for other in nearby {
+      assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+      let other_varying = query_ref (accessor, & other.varying);
+      let other_position = other_varying.trajectory.evaluate (*accessor.now());
+      let other_distance = distance (position, other_position).max();
+      if other_distance > varying.attack_range + radius (& other_varying) && other_distance > varying.awareness_range + radius (& other_varying) {
+        choices.extend (interaction_choices (accessor, object, other));
+      }
+    }
+  }
+  
+  if best priority >0 {
+    return best
+  }
+  
+  uhh
+  
+  
         let closest = nearby.into_iter().filter_map (| other | {
           assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
-          let other_varying = query_ref (accessor, & other.varying);
+          
           if is_enemy (accessor, object, & other) && other_varying.hitpoints > 0 && other_varying.object_type != ObjectType::Arrow && other_varying.object_type != ObjectType::Lair {
-            let other_position = other_varying.trajectory.evaluate (*accessor.now());
-            let other_distance = distance (position, other_position).max();
-            if other_distance <= varying.attack_range + radius (& other_varying) {
-              return Some ((other.clone(), other_distance, other_position));
-            }
-          }
-          None
-        }).min_by_key (| t | t.1);
+    
         
         if let Some(closest) = closest {
           result = Some (make_action (accessor, 5, Action {
@@ -414,15 +518,28 @@ fn choose_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &O
         ))}
         result
       },
-      ObjectType::Arrow => Some(make_action (accessor, 5, Action {
-        action_type: ActionType::Disappear,
-        achieve_cost: STANDARD_ACTION_SECOND*1/2,
-        ..Default::default()}
-      )),
     };
   });
 }
 
+fn action_velocity (accessor: &A, object: &ObjectHandle, action: Option<&Action>) {
+  let varying = query (accessor, &object.varying) ;
+  
+  if let Some(action) = action {
+    if action.action_type == ActionType::Think {
+      TODO
+    }
+  }
+  
+  Vector::new(0,0)
+}
+
+fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<Action>) {
+  modify_object (accessor, & object, | varying | {
+    varying.action = action;
+    varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.action.as_ref()));
+  });
+}
 
 
 define_event! {
