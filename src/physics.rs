@@ -137,13 +137,13 @@ trait ActionTrait {
 
 macro_rules! define_action_types_inner_call {
   ($method:ident, $self_hack:ident, [$arg: ident, $arg2: ident], $($T: ident,)*) => {
-    match $self_hack.action_type {
-      $($T(ref data) => data.$method ($arg, $arg2),)*
+    match $self_hack {
+      $(&$T(ref data) => data.$method ($arg, $arg2),)*
     }
   };
   ($method:ident, $self_hack:ident, [], $($T: ident,)*) => {
-    match $self_hack.action_type {
-      $($T(ref data) => data.$method (),)*
+    match $self_hack {
+      $(&$T(ref data) => data.$method (),)*
     }
   };
 }
@@ -195,14 +195,23 @@ define_action_types! {
   Collect,
   Wait,
 }
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Pursue {pub target: ObjectHandle, pub intention: Box <Action>}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct BuildGuild;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct RecruitRanger;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct SpawnBeast;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Think;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Rest;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Wait;
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Disappear {pub time: Time,}
 
 
@@ -311,12 +320,12 @@ fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   Detector::remove (accessor, & get_detector (accessor), object);
   
   if let Some(home) = home { if !is_destroyed(accessor, &home) {
-    let mut reconsider = false;
+    //let mut reconsider = false;
     modify_object (accessor, & home, | varying | {
       varying.dependents.retain (|a| a != object);
-      reconsider = varying.action.is_none();
+      //reconsider = varying.synchronous_action.is_none();
     });
-    if reconsider {reconsider_action (accessor, & home) ;}
+    //if reconsider {reconsider_action (accessor, & home) ;}
   }}
   
   // fix any predictions of colliding with this
@@ -363,11 +372,6 @@ pub fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectH
   query_ref (accessor, & object.varying).team != query_ref (accessor, & other.varying).team
 }
 
-pub fn target_location <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Option <Vector> {
-  let varying = query_ref (accessor, & object.varying);
-  varying.target.as_ref().map (| target | query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now())).or(varying.target_location)
-}
-
 pub fn radius (varying: & ObjectVarying)->Coordinate {
   varying.radius
 }
@@ -382,16 +386,6 @@ pub fn is_building(varying: & ObjectVarying)->bool {
 // ######          behavior           #######
 // ##########################################
 
-
-fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, action: Action)->SynchronousAction {
-  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
-  let variability_percent = action.cost_variability_percent();
-  let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
-  details.achieve_cost = details.achieve_cost * modifier / 100;
-  details.finish_cost = max(details.achieve_cost, details.finish_cost * modifier / 100);
-  details.progress = LinearTrajectory1::new (*accessor.now(), 0, STANDARD_ACTION_SPEED);
-  details
-}
 
 fn make_palace (mut details: ObjectVarying)->ObjectVarying {
   details.object_type = ObjectType::Palace;
@@ -447,15 +441,17 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
   });
 }
 
-fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle, distance: Coordinate)->Vec<Action > {
+fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->Vec<Action > {
   let varying = query_ref (accessor, &object.varying) ;
   let other_varying = query_ref (accessor, & other.varying);
+  let other_position = other_varying.trajectory.evaluate (*accessor.now());
+  let other_distance = distance (position, other_position).max() - radius (& other_varying);
   let mut result = Vec::new() ;
-  if varying.is_unit && other_varying.is_unit && other_varying.hitpoints >0 && distance < varying.attack_range {
+  if varying.is_unit && other_varying.is_unit && other_varying.hitpoints >0 && other_distance < varying.attack_range {
     result.push (Action::Shoot (Shoot {target: other.clone()}));
   }
-  let move_and_act = | action | {
-    if distance <0 {action} else {Action::Pursue(Pursue {target: other.clone(), intention: action})}
+  let move_and_act = | action: Action | {
+    if other_distance <0 {action} else {Action::Pursue(Pursue {target: other.clone(), intention: Box::new (action)})}
   };
   if varying.object_type == ObjectType::Ranger && other_varying.object_type == ObjectType::Beast && other_varying.hitpoints == 0 {
     result.push (move_and_act(Action::Collect (Collect {target: other.clone()})));
@@ -465,15 +461,16 @@ fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &
 
 fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
   let varying = query_ref (accessor, &object.varying) ;
+  let position = varying.trajectory.evaluate (*accessor.now());
   let mut choices = Vec::new();
-  let consider = | choices: &mut Vec<(Action, Amount)>, action | {
+  let consider = | choices: &mut Vec<(Action, Amount)>, action: Action | {
     if action.is_legal (accessor, object) {
       choices.push ((action, action.priority (accessor, object)));
     }
   };
   
   // first pass: cheapest calculations.
-  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref()) {
+  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
     consider (&mut choices, current.clone());
   }
   match varying.object_type.clone() {
@@ -494,9 +491,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   // second pass: scan surroundings for stuff.
   // Commonly used for characters on long journeys to notice nearby interesting stuff.
   // Optimization: currently, only units can interact with nearby stuff
-  if varying.is_unit {
-    let position = varying.trajectory.evaluate (*accessor.now());
-        
+  if varying.is_unit {        
     let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.interrupt_range as u64), Some (& object));
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
@@ -504,8 +499,8 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
       let other_distance = distance (position, other_position).max() - radius (& other_varying);
       if other_distance <= varying.interrupt_range {
-        for choice in interaction_choices (accessor, object, other) {
-          consider (&mut choices, choice, other_distance);
+        for choice in interaction_choices (accessor, object, &other) {
+          consider (&mut choices, choice,);
         }
       }
     }
@@ -521,8 +516,6 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   // third pass: there's nothing to do nearby, so it's finally worth it to pay the larger cost of searching for a distant task
   
   if varying.is_unit {
-    let position = varying.trajectory.evaluate (*accessor.now());
-        
     let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (& object));
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
@@ -530,8 +523,8 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
       let other_distance = distance (position, other_position).max() - radius (& other_varying);
       if other_distance > varying.interrupt_range && other_distance > varying.awareness_range {
-        for choice in interaction_choices (accessor, object, other) {
-          consider (&mut choices, choice, other_distance);
+        for choice in interaction_choices (accessor, object, &other) {
+          consider (&mut choices, choice);
         }
       }
     }
@@ -549,22 +542,42 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   
 }
 
-fn action_velocity (accessor: &A, object: &ObjectHandle, action: Option<&Action>) {
-  let varying = query (accessor, &object.varying) ;
-  
-  if let Some(action) = action {
-    if action.action_type == ActionType::Think {
-      TODO
-    }
+fn action_velocity (accessor: &A, object: &ObjectHandle, action: Option<&Action>)->Vector {
+  if let Some(target) = action.and_then (| action | action.target_location (accessor, object)) {
+    let varying = query_ref (accessor, &object.varying) ;
+    let position = varying.trajectory.evaluate (*accessor.now());
+    normalized_to (target - position, varying.speed)
   }
-  
-  Vector::new(0,0)
+  else {
+    Vector::new(0,0)
+  }
 }
 
+
+fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, action: Action)->SynchronousAction {
+  let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
+  let variability_percent = action.cost_variability_percent();
+  let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
+  SynchronousAction {
+    action_type: action,
+    achieve_cost: action.default_achieve_cost().expect ("you can't make an ongoing action into a synchronous action") * modifier / 100,
+    finish_cost: action.default_finish_cost() * modifier / 100,
+    progress: LinearTrajectory1::new (*accessor.now(), 0, STANDARD_ACTION_SPEED),
+    achieved: false,
+  }
+}
 fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<Action>) {
+  let (synchronous_action, ongoing_action) = match action {
+    None => (None, None),
+    Some (action) => match action.default_achieve_cost() {
+      None => (Some(make_synchronous_action(Action::Think (Think))), Some (action)),
+      Some (cost) => (Some(make_synchronous_action(action)), None),
+    }
+  }
   modify_object (accessor, & object, | varying | {
-    varying.action = action;
-    varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.action.as_ref()));
+    varying.synchronous_action = synchronous_action;
+    varying.ongoing_action = ongoing_action;
+    varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.synchronous_action.as_ref().map (| action | &action.action_type)));
   });
 }
 
