@@ -2,7 +2,7 @@ use super::*;
 
 use nalgebra::{Vector2};
 use rand::Rng;
-use boolinator::Boolinator;
+//use boolinator::Boolinator;
 //use std::cmp::max;
 
 
@@ -131,7 +131,9 @@ trait ActionTrait {
   fn default_achieve_cost (&self)->Option <Progress> {None}
   fn default_finish_cost (&self)->Progress {self.default_achieve_cost ().expect ("we shouldn't be asking for the finish cost on an open-ended action")}
   fn cost_variability_percent (&self)->i64 {0}
+  #[allow (unused_variables)]
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {panic!("reached undefined achieve() implementation, probably either trying to achieve an open-ended action or someone forgot to implement achieve() for something")}
+  #[allow (unused_variables)]
   fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {None}
 }
 
@@ -417,13 +419,13 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
         }
       }
       if varying.is_unit {
-        if let Some(target_location) = varying.synchronous_action.and_then (| action | action.action_type.target_location (accessor, object)) {
+        if let Some(target_location) = varying.synchronous_action.as_ref().and_then (| action | action.action_type.target_location (accessor, object)) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
             consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
           }
         }
       }
-      let mut collide_target = varying.object_type == ObjectType::Arrow;
+      let collide_target = varying.object_type == ObjectType::Arrow;
       /*if varying.object_type == ObjectType::Ranger { if let Some(target) = varying.target.as_ref() { if !is_destroyed (accessor, target) && query_ref (accessor, & target.varying).hitpoints <= 0 {
         collide_target = true;
       }}}*/
@@ -513,7 +515,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   choices.sort_by_key (| choice | choice.1);
   if let Some(best) = choices.last() {
     if best.1> 0{
-      return best.0
+      return best.0.clone()
     }
   }
   
@@ -537,24 +539,13 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   choices.sort_by_key (| choice | choice.1);
   if let Some(best) = choices.last() {
     if best.1> 0{
-      return best.0
+      return best.0.clone()
     }
   }
   
   Action::Wait(Wait)
 
   
-}
-
-fn action_velocity <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<&Action>)->Vector {
-  if let Some(target) = action.and_then (| action | action.target_location (accessor, object)) {
-    let varying = query_ref (accessor, &object.varying) ;
-    let position = varying.trajectory.evaluate (*accessor.now());
-    normalized_to (target - position, varying.speed)
-  }
-  else {
-    Vector::new(0,0)
-  }
 }
 
 
@@ -575,13 +566,22 @@ fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &Obje
     None => (None, None),
     Some (action) => match action.default_achieve_cost() {
       None => (Some(make_synchronous_action(accessor, Action::Think (Think))), Some (action)),
-      Some (cost) => (Some(make_synchronous_action(accessor, action)), None),
+      Some (_cost) => (Some(make_synchronous_action(accessor, action)), None),
     }
   };
   modify_object (accessor, & object, | varying | {
     varying.synchronous_action = synchronous_action;
     varying.ongoing_action = ongoing_action;
-    varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.synchronous_action.as_ref().map (| action | &action.action_type)));
+  });
+  modify_object (accessor, & object, | varying | {
+    let velocity = if let Some(target) = varying.synchronous_action.as_ref().and_then (| action | action.action_type.target_location (accessor, object)) {
+      let position = varying.trajectory.evaluate (*accessor.now());
+      normalized_to (target - position, varying.speed)
+    }
+    else {
+      Vector::new(0,0)
+    };
+    varying.trajectory.set_velocity (*accessor.now(), velocity);
   });
 }
 
@@ -591,11 +591,11 @@ fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object
 
 
 impl ActionTrait for BuildGuild {
-  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->bool {
     //hack: this action is still actually "attempt to build a guild or maybe a palace"
     true
   }
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     1000
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(2*STANDARD_ACTION_SECOND) }
@@ -656,7 +656,7 @@ impl ActionTrait for RecruitRanger {
     let varying = query_ref (accessor, &object.varying) ;
     varying.food >= RANGER_COST && varying.dependents.len() < 4
   }
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     1000
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(10*STANDARD_ACTION_SECOND) }
@@ -689,7 +689,7 @@ impl ActionTrait for RecruitRanger {
 
 
 impl ActionTrait for SpawnBeast {
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     1000
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(25*STANDARD_ACTION_SECOND) }
@@ -715,12 +715,12 @@ impl ActionTrait for SpawnBeast {
   }
 }
 impl ActionTrait for Think {
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     panic!("Think is a special action that's not supposed to be considered as an alternative to other actions")
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(STANDARD_ACTION_SECOND*6/10) }
   fn cost_variability_percent (&self)->i64 { 20 }
-  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle) {
     //let varying = query (accessor, &object.varying);
     
   }
@@ -730,7 +730,7 @@ impl ActionTrait for Think {
   }
 }
 impl ActionTrait for Shoot {
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     COMBAT_PRIORITY + 10
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(STANDARD_ACTION_SECOND*6/10) }
@@ -758,7 +758,7 @@ impl ActionTrait for Shoot {
   }
 }
 impl ActionTrait for Disappear {
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     COMBAT_PRIORITY + 1000
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(self.time*STANDARD_ACTION_SPEED) }
@@ -776,20 +776,20 @@ impl ActionTrait for Pursue {
     let time_to_perform = self.intention.default_finish_cost()/STANDARD_ACTION_SPEED;
     self.intention.priority(accessor, object)*time_to_perform/(time_to_perform + time_to_reach)
   }
-  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
-    let varying = query_ref (accessor, &object.varying) ;
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, _object: &ObjectHandle)->Option<Vector> {
+    //let varying = query_ref (accessor, &object.varying) ;
     Some(query_ref (accessor, & self.target.varying).trajectory.evaluate (*accessor.now()))
   }
 }
 
 impl ActionTrait for Wait{
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     0
   }
 }
 
 impl ActionTrait for Collect {
-  fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+  fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     2000
   }
   fn default_achieve_cost (&self)->Option <Progress>{ Some(STANDARD_ACTION_SECOND*10/10) }
