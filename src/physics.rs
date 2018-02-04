@@ -3,7 +3,7 @@ use super::*;
 use nalgebra::{Vector2};
 use rand::Rng;
 use boolinator::Boolinator;
-use std::cmp::max;
+//use std::cmp::max;
 
 
 use time_steward::{DeterministicRandomId};
@@ -138,12 +138,12 @@ trait ActionTrait {
 macro_rules! define_action_types_inner_call {
   ($method:ident, $self_hack:ident, [$arg: ident, $arg2: ident], $($T: ident,)*) => {
     match $self_hack {
-      $(&$T(ref data) => data.$method ($arg, $arg2),)*
+      $(&Action::$T(ref data) => data.$method ($arg, $arg2),)*
     }
   };
   ($method:ident, $self_hack:ident, [], $($T: ident,)*) => {
     match $self_hack {
-      $(&$T(ref data) => data.$method (),)*
+      $(&Action::$T(ref data) => data.$method (),)*
     }
   };
 }
@@ -170,7 +170,7 @@ impl ActionTrait for Action {
     define_action_types_inner_call! (default_finish_cost, self, [], $($T,)*)
   }
   fn cost_variability_percent (&self)->i64 {
-    define_action_types_inner_call! (default_cost_variability_percent, self, [], $($T,)*)
+    define_action_types_inner_call! (cost_variability_percent, self, [], $($T,)*)
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     define_action_types_inner_call! (achieve, self, [accessor, object], $($T,)*)
@@ -198,6 +198,8 @@ define_action_types! {
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct Collect {pub target: ObjectHandle,}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Pursue {pub target: ObjectHandle, pub intention: Box <Action>}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct BuildGuild;
@@ -217,7 +219,7 @@ pub struct Disappear {pub time: Time,}
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct SynchronousAction {
-  pub action_type: ActionType,
+  pub action_type: Action,
   pub progress: LinearTrajectory1,
   pub achieve_cost: Progress,
   pub finish_cost: Progress,
@@ -267,7 +269,8 @@ pub struct ObjectVarying {
   pub synchronous_action: Option <SynchronousAction>,
   pub ongoing_action: Option <Action>,
   
-  //pub target: Option <ObjectHandle>,
+  //only used by arrows at the moment
+  pub target: Option <ObjectHandle>,
   //pub target_location: Option <Vector>,
   
   pub home: Option <ObjectHandle>,
@@ -414,7 +417,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
         }
       }
       if varying.is_unit {
-        if let Some(target_location) = target_location (accessor, object) {
+        if let Some(target_location) = varying.synchronous_action.and_then (| action | action.action_type.target_location (accessor, object)) {
           if let Some(time) = varying.trajectory.when_collides (*accessor.now(), &LinearTrajectory2::constant(*accessor.now(), target_location), TRIVIAL_DISTANCE) {
             consider (accessor.create_prediction (time, id, ReachTarget {object: object.clone()}));
           }
@@ -443,6 +446,7 @@ fn update_prediction <A: EventAccessor <Steward = Steward>>(accessor: &A, object
 
 fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->Vec<Action > {
   let varying = query_ref (accessor, &object.varying) ;
+  let position = varying.trajectory.evaluate (*accessor.now());
   let other_varying = query_ref (accessor, & other.varying);
   let other_position = other_varying.trajectory.evaluate (*accessor.now());
   let other_distance = distance (position, other_position).max() - radius (& other_varying);
@@ -465,7 +469,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   let mut choices = Vec::new();
   let consider = | choices: &mut Vec<(Action, Amount)>, action: Action | {
     if action.is_legal (accessor, object) {
-      choices.push ((action, action.priority (accessor, object)));
+      choices.push ((action.clone(), action.priority (accessor, object)));
     }
   };
   
@@ -484,7 +488,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   choices.sort_by_key (| choice | choice.1);
   if let Some(best) = choices.last() {
     if best.1>=COMBAT_PRIORITY {
-      return best.0
+      return best.0.clone()
     }
   }
   
@@ -542,7 +546,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   
 }
 
-fn action_velocity (accessor: &A, object: &ObjectHandle, action: Option<&Action>)->Vector {
+fn action_velocity <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<&Action>)->Vector {
   if let Some(target) = action.and_then (| action | action.target_location (accessor, object)) {
     let varying = query_ref (accessor, &object.varying) ;
     let position = varying.trajectory.evaluate (*accessor.now());
@@ -559,7 +563,7 @@ fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, 
   let variability_percent = action.cost_variability_percent();
   let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
   SynchronousAction {
-    action_type: action,
+    action_type: action.clone(),
     achieve_cost: action.default_achieve_cost().expect ("you can't make an ongoing action into a synchronous action") * modifier / 100,
     finish_cost: action.default_finish_cost() * modifier / 100,
     progress: LinearTrajectory1::new (*accessor.now(), 0, STANDARD_ACTION_SPEED),
@@ -570,15 +574,19 @@ fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &Obje
   let (synchronous_action, ongoing_action) = match action {
     None => (None, None),
     Some (action) => match action.default_achieve_cost() {
-      None => (Some(make_synchronous_action(Action::Think (Think))), Some (action)),
-      Some (cost) => (Some(make_synchronous_action(action)), None),
+      None => (Some(make_synchronous_action(accessor, Action::Think (Think))), Some (action)),
+      Some (cost) => (Some(make_synchronous_action(accessor, action)), None),
     }
-  }
+  };
   modify_object (accessor, & object, | varying | {
     varying.synchronous_action = synchronous_action;
     varying.ongoing_action = ongoing_action;
     varying.trajectory.set_velocity (*accessor.now(), action_velocity (accessor, object, varying.synchronous_action.as_ref().map (| action | &action.action_type)));
   });
+}
+
+fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  set_action (accessor, object, Some (choose_action (accessor, object))) ;
 }
 
 
@@ -718,7 +726,7 @@ impl ActionTrait for Think {
   }
   fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
     let varying = query_ref (accessor, &object.varying) ;
-    varying.ongoing_action.expect ("there should be an ongoing action if you are thinking").target_location(accessor, object)
+    varying.ongoing_action.as_ref().expect ("there should be an ongoing action if you are thinking").target_location(accessor, object)
   }
 }
 impl ActionTrait for Shoot {
@@ -740,7 +748,7 @@ impl ActionTrait for Shoot {
         create_object (accessor, object, 0x27706762e4201474, ObjectVarying {
           object_type: ObjectType::Arrow,
           team: varying.team,
-          target: action.target,
+          target: Some(self.target.clone()),
           radius: STRIDE/5,
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
           .. Default::default()
