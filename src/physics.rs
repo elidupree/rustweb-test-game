@@ -453,9 +453,7 @@ fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &
   let other_position = other_varying.trajectory.evaluate (*accessor.now());
   let other_distance = distance (position, other_position).max() - radius (& other_varying);
   let mut result = Vec::new() ;
-  if varying.is_unit && other_varying.is_unit && other_varying.hitpoints >0 && other_distance < varying.attack_range {
-    result.push (Action::Shoot (Shoot {target: other.clone()}));
-  }
+  result.push (Action::Shoot (Shoot {target: other.clone()}));
   let move_and_act = | action: Action | {
     if other_distance <0 {action} else {Action::Pursue(Pursue {target: other.clone(), intention: Box::new (action)})}
   };
@@ -689,6 +687,10 @@ impl ActionTrait for RecruitRanger {
 
 
 impl ActionTrait for SpawnBeast {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    let varying = query_ref (accessor, &object.varying) ;
+    varying.dependents.len() < 3
+  }
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     1000
   }
@@ -730,6 +732,14 @@ impl ActionTrait for Think {
   }
 }
 impl ActionTrait for Shoot {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    let varying = query_ref (accessor, &object.varying) ;
+    let position = varying.trajectory.evaluate (*accessor.now());
+    let other_varying = query_ref (accessor, & self.target.varying);
+    let other_position = other_varying.trajectory.evaluate (*accessor.now());
+    let other_distance = distance (position, other_position).max() - radius (& other_varying);
+    varying.is_unit && other_varying.is_unit && *object != self.target && other_varying.hitpoints >0 && other_distance < varying.attack_range
+  }
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     COMBAT_PRIORITY + 10
   }
