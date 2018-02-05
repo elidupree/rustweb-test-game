@@ -21,6 +21,12 @@ use self::simple_timeline::{SimpleTimeline, query, set};
 
 use time_steward::support::rounding_error_tolerant_math::Range;
 
+macro_rules! printlnerr(
+    ($($arg:tt)*) => { {use std::io::Write;
+        let r = writeln!(&mut ::std::io::stderr(), $($arg)*);
+        r.expect("failed printing to stderr");
+    } }
+);
 
 macro_rules! define_event {
   (

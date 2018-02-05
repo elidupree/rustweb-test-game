@@ -104,7 +104,7 @@ impl BasicsTrait for Basics {
   type Time = Time;
   type Globals = Globals;
   type Types = (ListedType <AchieveAction>);
-  const MAX_ITERATION: u32 = 12;
+  const MAX_ITERATION: u32 = 50;
 }
 
 #[derive (Serialize, Deserialize, Debug)]
@@ -452,13 +452,18 @@ fn interaction_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &
   let other_varying = query_ref (accessor, & other.varying);
   let other_position = other_varying.trajectory.evaluate (*accessor.now());
   let other_distance = distance (position, other_position).max() - radius (& other_varying);
+  
   let mut result = Vec::new() ;
-  result.push (Action::Shoot (Shoot {target: other.clone()}));
-  let move_and_act = | action: Action | {
-    if other_distance <0 {action} else {Action::Pursue(Pursue {target: other.clone(), intention: Box::new (action)})}
+  let move_and_act = | range, action: Action | {
+    printlnerr!("{:?}", (other_distance, range));
+    if other_distance < range {action} else {Action::Pursue(Pursue {target: other.clone(), intention: Box::new (action)})}
   };
+  
+  if varying.is_unit && other_varying.is_unit && object != other && other_varying.hitpoints >0 {
+    result.push (move_and_act(varying.attack_range, Action::Shoot (Shoot {target: other.clone()})));
+  }
   if varying.object_type == ObjectType::Ranger && other_varying.object_type == ObjectType::Beast && other_varying.hitpoints == 0 {
-    result.push (move_and_act(Action::Collect (Collect {target: other.clone()})));
+    result.push (move_and_act(0, Action::Collect (Collect {target: other.clone()})));
   }
   result
 }
@@ -474,9 +479,9 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   };
   
   // first pass: cheapest calculations.
-  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
+  /*if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
     consider (&mut choices, current.clone());
-  }
+  }*/
   match varying.object_type.clone() {
     ObjectType::Palace => consider (&mut choices, Action::BuildGuild(BuildGuild)),
     ObjectType::Guild => consider (&mut choices, Action::RecruitRanger(RecruitRanger)),
@@ -668,9 +673,12 @@ impl ActionTrait for RecruitRanger {
             team: varying.team,
             home: Some (object.clone()),
             hitpoints: 5,
+            max_hitpoints: 5,
             radius: STRIDE/2,
             attack_range: RANGER_RANGE,
+            interrupt_range: RANGER_RANGE,
             awareness_range: 200*STRIDE,
+            speed: 10*STRIDE/SECOND,
             is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
@@ -704,9 +712,12 @@ impl ActionTrait for SpawnBeast {
             team: varying.team,
             home: Some (object.clone()),
             hitpoints: 5,
+            max_hitpoints: 5,
             radius: STRIDE*2/3,
             attack_range: STRIDE*2,
+            interrupt_range: RANGER_RANGE,
             awareness_range: STRIDE*30,
+            speed: 10*STRIDE/SECOND,
             is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
@@ -716,6 +727,9 @@ impl ActionTrait for SpawnBeast {
         modify_object (accessor, object, | varying | varying.dependents.push (new));
   }
 }
+
+
+
 impl ActionTrait for Think {
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     panic!("Think is a special action that's not supposed to be considered as an alternative to other actions")
@@ -731,6 +745,9 @@ impl ActionTrait for Think {
     varying.ongoing_action.as_ref().expect ("there should be an ongoing action if you are thinking").target_location(accessor, object)
   }
 }
+
+
+
 impl ActionTrait for Shoot {
   fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
     let varying = query_ref (accessor, &object.varying) ;
@@ -760,6 +777,7 @@ impl ActionTrait for Shoot {
           team: varying.team,
           target: Some(self.target.clone()),
           radius: STRIDE/5,
+          speed: 50*STRIDE/SECOND,
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
           .. Default::default()
         });
@@ -767,6 +785,9 @@ impl ActionTrait for Shoot {
 
   }
 }
+
+
+
 impl ActionTrait for Disappear {
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     COMBAT_PRIORITY + 1000
@@ -775,16 +796,28 @@ impl ActionTrait for Disappear {
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     destroy_object (accessor, object);
   }
+  fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {
+    let varying = query_ref (accessor, &object.varying) ;
+    let foo = query_ref (accessor, & varying.target.as_ref().unwrap().varying).trajectory.evaluate (*accessor.now());
+    Some(foo)
+  }
 }
 
+
+
+// TODO: can't "pursue in order to X" if you are already in range to X
 impl ActionTrait for Pursue {
+  fn is_legal <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    let varying = query_ref (accessor, &object.varying) ;
+    varying.is_unit && *object != self.target
+  }
   fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
     let varying = query_ref (accessor, &object.varying) ;
     let location = varying.trajectory.evaluate (*accessor.now());
     let target = self.target_location(accessor, object).unwrap();
     let time_to_reach = distance (location, target).max()/varying.speed;
     let time_to_perform = self.intention.default_finish_cost()/STANDARD_ACTION_SPEED;
-    self.intention.priority(accessor, object)*time_to_perform/(time_to_perform + time_to_reach)
+    self.intention.priority(accessor, object)*time_to_perform/(time_to_perform + time_to_reach)-1
   }
   fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, _object: &ObjectHandle)->Option<Vector> {
     //let varying = query_ref (accessor, &object.varying) ;
@@ -792,11 +825,15 @@ impl ActionTrait for Pursue {
   }
 }
 
+
+
 impl ActionTrait for Wait{
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
     0
   }
 }
+
+
 
 impl ActionTrait for Collect {
   fn priority <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Amount {
@@ -811,6 +848,8 @@ impl ActionTrait for Collect {
     });
   }
 }
+
+
 
 impl ActionTrait for Rest {
   fn priority <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
@@ -964,6 +1003,7 @@ define_event! {
   pub struct ReachTarget {object: ObjectHandle},
   PersistentTypeId(0x26058edd2a3247aa),
   fn execute (&self, accessor: &mut Accessor) {
+    printlnerr!("{:?}", query (accessor, & self.object.varying));
     reconsider_action (accessor, &self.object);
   }
 }
