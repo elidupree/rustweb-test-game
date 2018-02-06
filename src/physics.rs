@@ -132,10 +132,10 @@ struct ActionPracticalities {
   time_costs: Option <(Amount, Amount, i64)>,
 }
 
-trait ActionTrait {
+trait ActionTrait: ::std::fmt::Debug {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities;
   #[allow (unused_variables)]
-  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {panic!("reached undefined achieve() implementation, probably either trying to achieve an open-ended action or someone forgot to implement achieve() for something")}
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {panic!("reached undefined achieve() implementation, probably either trying to achieve an open-ended action or someone forgot to implement achieve() for something. Action: {:?}", self)}
   #[allow (unused_variables)]
   fn target_location <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Option<Vector> {None}
 }
@@ -452,6 +452,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   fn consider_impl <A: Accessor <Steward = Steward>> (accessor: &A, object: &ObjectHandle, choices: &mut Vec<(Action, ActionPracticalities)>, action: Action) {
     let varying = query_ref (accessor, &object.varying) ;
     let practicalities = action.practicalities (accessor, object);
+    //if varying.object_type == ObjectType::Ranger {printlnerr!("{:?}", (&action, &practicalities));}
     if !practicalities.indefinitely_impossible {
       if let Some(limit) = practicalities.impossible_outside_range.clone() {
         let location = varying.trajectory.evaluate (*accessor.now());
@@ -561,7 +562,7 @@ fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, 
   }
 }
 fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<Action>) {
-  let (synchronous_action, ongoing_action) = match action {
+  let (synchronous_action, ongoing_action) = match action.clone() {
     None => (None, None),
     Some (action) => match action.practicalities (accessor, object).time_costs {
       None => (Some(make_synchronous_action(accessor, Action::Think (Think), (STANDARD_ACTION_SECOND*6/10, 0, 20))), Some (action)),
@@ -571,6 +572,7 @@ fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &Obje
   modify_object (accessor, & object, | varying | {
     varying.synchronous_action = synchronous_action;
     varying.ongoing_action = ongoing_action;
+    //if varying.object_type == ObjectType::Ranger {printlnerr!("CHOSEN {:?}", (&action));}
   });
   modify_object (accessor, & object, | varying | {
     let velocity = if let Some(target) = varying.synchronous_action.as_ref().and_then (| action | action.action_type.target_location (accessor, object)) {
@@ -817,7 +819,7 @@ impl ActionTrait for Pursue {
       let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
       let target_distance = distance (location, target_location).max();
       let excessive_distance = target_distance - limit.1;
-      if excessive_distance <= 0 || varying.speed <= 0 || *object != limit.0 {
+      if excessive_distance <= 0 || varying.speed <= 0 || *object == limit.0 {
         result.indefinitely_impossible = true;
       } else {
         let time_to_reach = (excessive_distance + varying.speed - 1)/varying.speed;
@@ -828,6 +830,7 @@ impl ActionTrait for Pursue {
     else {
       result.indefinitely_impossible = true;
     }
+    result.time_costs = None;
     
     result
   }
@@ -1036,7 +1039,7 @@ define_event! {
   pub struct ReachTarget {object: ObjectHandle},
   PersistentTypeId(0x26058edd2a3247aa),
   fn execute (&self, accessor: &mut Accessor) {
-    printlnerr!("{:?}", query (accessor, & self.object.varying));
+    //printlnerr!("{:?}", query (accessor, & self.object.varying));
     reconsider_action (accessor, &self.object);
   }
 }
