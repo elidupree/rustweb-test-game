@@ -82,6 +82,24 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       context.fillStyle = "rgba("+@{varying.team as i32*255/6}+",0,"+@{(1-varying.team as i32)*255}+",0.2)";
       context.fill();
     }}
+    if varying.attack_range >0 {js! {
+      context.beginPath();
+      context.arc (@{center [0]},@{center [1]},@{varying.attack_range as f64}, 0, Math.PI*2);
+      context.lineWidth = @{0.3/scale};
+      context.stroke();
+    }}
+    if varying.interrupt_range >0 {js! {
+      context.beginPath();
+      context.arc (@{center [0]},@{center [1]},@{varying.interrupt_range as f64}, 0, Math.PI*2);
+      context.lineWidth = @{0.3/scale};
+      context.stroke();
+    }}
+    if varying.awareness_range >0 {js! {
+      context.beginPath();
+      context.arc (@{center [0]},@{center [1]},@{varying.awareness_range as f64}, 0, Math.PI*2);
+      context.lineWidth = @{0.3/scale};
+      context.stroke();
+    }}
     if let Some(home) = varying.home.as_ref() {
       let home_center = query_ref (accessor, & home.varying).trajectory.evaluate (*accessor.now());
       let home_center = Vector2::new (home_center [0] as f64, home_center [1] as f64);
