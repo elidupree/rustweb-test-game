@@ -527,7 +527,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
       let other_varying = query_ref (accessor, & other.varying);
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
       let other_distance = distance (position, other_position).max() - radius (& other_varying);
-      if other_distance > varying.interrupt_range && other_distance > varying.awareness_range {
+      if other_distance > varying.interrupt_range && other_distance <= varying.awareness_range {
         for choice in interaction_choices (accessor, object, &other) {
           consider (&mut choices, choice);
         }
