@@ -303,6 +303,7 @@ fn create_object <A: EventAccessor <Steward = Steward>>(accessor: &A, source_obj
 }
 
 fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be destroyed again") ;
   let mut home = None;
   modify (accessor, & object.varying, | varying | {
     varying.prediction = None;
