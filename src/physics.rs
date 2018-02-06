@@ -3,7 +3,7 @@ use super::*;
 use nalgebra::{Vector2};
 use rand::Rng;
 //use boolinator::Boolinator;
-use std::cmp::max;
+use std::cmp::{min, max};
 
 
 use time_steward::{DeterministicRandomId};
@@ -919,24 +919,28 @@ impl ActionTrait for Collect {
   }
 }
 
+impl ExchangeResources {
+  fn transfer_amount <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->Amount {
+    let varying = query_ref (accessor, &object.varying);
+    let target_varying = query_ref (accessor, & self.target.varying);
+    let mut transfer;
+    if target_varying.object_type == ObjectType::Palace {
+      transfer = varying.food - RANGER_COST*4;
+    }
+    else {
+      transfer = RANGER_COST*2 - target_varying.food;
+    }
+    transfer = min (varying.food, transfer);
+    transfer = max (-target_varying.food, transfer);
+    transfer
+  }
+}
 impl ActionTrait for ExchangeResources {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
-    let desire;
-    if target_varying.object_type == ObjectType::Palace && varying.food < RANGER_COST*4 {
-      desire = max(target_varying.food, RANGER_COST*4 - varying.food);
-    }
-    else if target_varying.object_type == ObjectType::Palace {
-      desire = varying.food - RANGER_COST*4;
-    }
-    else if target_varying.food < RANGER_COST*2 {
-      desire = max(varying.food, RANGER_COST*2 - target_varying.food);
-    }
-    else {
-      desire = target_varying.food - RANGER_COST*2;
-    }
+    let desire = self.transfer_amount (accessor, object).abs();
     ActionPracticalities {
       priority: desire,
       indefinitely_impossible: !(varying.object_type == ObjectType::Peasant && (target_varying.object_type == ObjectType::Palace || target_varying.object_type == ObjectType::Guild)),
@@ -947,21 +951,7 @@ impl ActionTrait for ExchangeResources {
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     if !is_destroyed (accessor, & self.target) {
-      let varying = query (accessor, &object.varying);
-      let target_varying = query (accessor, & self.target.varying);
-      let transfer;
-      if target_varying.object_type == ObjectType::Palace && varying.food < RANGER_COST*4 {
-        transfer = -max(target_varying.food, RANGER_COST*4 - varying.food);
-      }
-      else if target_varying.object_type == ObjectType::Palace {
-        transfer = varying.food - RANGER_COST*4;
-      }
-      else if target_varying.food < RANGER_COST*2 {
-        transfer = max(varying.food, RANGER_COST*2 - target_varying.food);
-      }
-      else {
-        transfer = RANGER_COST*2 - target_varying.food;
-      }
+      let transfer = self.transfer_amount (accessor, object);
       modify_object (accessor, object, | varying | {
         varying.food -= transfer;
       });
