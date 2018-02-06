@@ -470,9 +470,9 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   };
   
   // first pass: cheapest calculations.
-  /*if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
+  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
     consider (&mut choices, current.clone());
-  }*/
+  }
   /*match varying.object_type.clone() {
     ObjectType::Palace => consider (&mut choices, Action::BuildGuild(BuildGuild)),
     ObjectType::Guild => consider (&mut choices, Action::RecruitRanger(RecruitRanger)),
@@ -830,6 +830,7 @@ impl ActionTrait for Pursue {
     else {
       result.indefinitely_impossible = true;
     }
+    if varying.hitpoints <= 0 {result.indefinitely_impossible = true}
     result.time_costs = None;
     
     result
