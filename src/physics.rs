@@ -835,7 +835,6 @@ impl ActionTrait for Pursue {
     else {
       result.indefinitely_impossible = true;
     }
-    if varying.hitpoints <= 0 {result.indefinitely_impossible = true}
     result.time_costs = None;
     
     result
