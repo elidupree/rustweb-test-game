@@ -248,7 +248,9 @@ pub struct ObjectVarying {
   
   pub team: usize,
   
+  #[derivative (Default (value = "1"))]
   pub hitpoints: Amount,
+  #[derivative (Default (value = "1"))]
   pub max_hitpoints: Amount,
   #[derivative (Default (value = "LinearTrajectory1::new (0, 0, 0)"))]
   pub endurance: LinearTrajectory1,
@@ -588,7 +590,9 @@ fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &Obje
 }
 
 fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  set_action (accessor, object, Some (choose_action (accessor, object))) ;
+  if !is_destroyed (accessor, object) && query_ref (accessor, &object.varying).hitpoints > 0 {
+    set_action (accessor, object, Some (choose_action (accessor, object))) ;
+  }
 }
 
 
@@ -1053,9 +1057,21 @@ define_event! {
     //let (striker, victim) = if query_ref (accessor, & self.objects [0].varying).object_type == ObjectType::Arrow {(& self.objects [0], & self.objects [1])} else {(& self.objects [1], & self.objects [0])};
     let (striker, victim) = (& self.objects [0], & self.objects [1]);
     let mut dead = false;
+    let mut leave_corpse = false;
     destroy_object (accessor, striker);
-    modify_object (accessor, victim, | varying | {varying.hitpoints -= 1; dead = dead || (varying.hitpoints == 0 && varying.object_type != ObjectType::Beast);});
-    if dead {destroy_object (accessor, victim);}
+    modify_object (accessor, victim, | varying | {
+      varying.hitpoints -= 1;
+      dead = varying.hitpoints == 0;
+      leave_corpse = varying.object_type != ObjectType::Beast;
+    });
+    if dead {
+      if leave_corpse {
+        set_action (accessor, victim, None);
+      }
+      else {
+        destroy_object (accessor, victim);
+      }
+    }
   }
 }
 
