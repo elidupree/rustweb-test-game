@@ -1061,7 +1061,7 @@ define_event! {
     modify_object (accessor, victim, | varying | {
       varying.hitpoints -= 1;
       dead = varying.hitpoints == 0;
-      leave_corpse = varying.object_type != ObjectType::Beast;
+      leave_corpse = varying.object_type == ObjectType::Beast;
     });
     if dead {
       if leave_corpse {
