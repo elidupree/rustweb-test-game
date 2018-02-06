@@ -767,7 +767,7 @@ impl ActionTrait for Shoot {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: 2000,
+      priority: 2000*if is_enemy (accessor, object, & self.target) {1} else {-1},
       indefinitely_impossible: !(varying.is_unit && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
