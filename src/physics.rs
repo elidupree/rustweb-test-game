@@ -495,6 +495,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   consider (&mut choices, Action::RecruitRanger(RecruitRanger));
   consider (&mut choices, Action::SpawnBeast(SpawnBeast));
   consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2}));
+  consider (&mut choices, Action::Rest(Rest));
   
   choices.sort_by_key (| choice | choice.1.priority);
   if let Some(best) = choices.last() {
@@ -766,7 +767,7 @@ impl ActionTrait for Shoot {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: COMBAT_PRIORITY + 1000,
+      priority: 2000,
       indefinitely_impossible: !(varying.is_unit && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
@@ -881,10 +882,12 @@ impl ActionTrait for Collect {
     }
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
-    destroy_object (accessor, & self.target);
-    modify_object (accessor, object, | varying | {
-      varying.food += BEAST_REWARD;
-    });
+    if !is_destroyed (accessor, & self.target) {
+      destroy_object (accessor, & self.target);
+      modify_object (accessor, object, | varying | {
+        varying.food += BEAST_REWARD;
+      });
+    }
   }
 }
 
