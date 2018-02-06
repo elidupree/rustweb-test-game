@@ -194,9 +194,12 @@ define_action_types! {
   Pursue,
   Collect,
   Wait,
+  ExchangeResources,
 }
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct ExchangeResources {pub target: ObjectHandle,}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Collect {pub target: ObjectHandle,}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -451,6 +454,7 @@ fn interaction_choices <A: Accessor <Steward = Steward>>(_accessor: &A, _object:
   let mut result = Vec::new() ;
   result.push (Action::Shoot (Shoot {target: other.clone()}));
   result.push (Action::Collect (Collect {target: other.clone()}));
+  result.push (Action::ExchangeResources (ExchangeResources {target: other.clone()}));
   result
 }
 
@@ -619,6 +623,30 @@ impl ActionTrait for BuildGuild {
     let varying = query (accessor, &object.varying) ;
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut generator = accessor.extended_now().id.to_rng();
+        if varying.dependents.iter().all(| other | query_ref (accessor, & other.varying).object_type != ObjectType::Peasant) {
+        let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
+          ObjectVarying {
+            object_type: ObjectType::Peasant,
+            team: varying.team,
+            home: Some (object.clone()),
+            hitpoints: 5,
+            max_hitpoints: 5,
+            radius: STRIDE*1/2,
+            attack_range: STRIDE*2,
+            interrupt_range: STRIDE*6,
+            awareness_range: STRIDE*100,
+            speed: 4*STRIDE/SECOND,
+            is_unit: true,
+            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut generator, varying.radius + 2*STRIDE)),
+            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
+            .. Default::default()
+          },
+        );
+        modify_object (accessor, object, | varying | {
+          varying.dependents.push (new);
+        });
+        return
+        }
         for attempt in 0..9 {
           let guild = attempt < 5;
           let cost = if guild {GUILD_COST} else {PALACE_COST};
@@ -768,7 +796,7 @@ impl ActionTrait for Shoot {
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
       priority: 2000*if is_enemy (accessor, object, & self.target) {1} else {-1},
-      indefinitely_impossible: !(varying.is_unit && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
+      indefinitely_impossible: !(varying.is_unit && varying.object_type != ObjectType::Peasant && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
       .. Default::default()
@@ -886,6 +914,59 @@ impl ActionTrait for Collect {
       destroy_object (accessor, & self.target);
       modify_object (accessor, object, | varying | {
         varying.food += BEAST_REWARD;
+      });
+    }
+  }
+}
+
+impl ActionTrait for ExchangeResources {
+  fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
+    if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
+    let varying = query_ref (accessor, &object.varying);
+    let target_varying = query_ref (accessor, & self.target.varying);
+    let desire;
+    if target_varying.object_type == ObjectType::Palace && varying.food < RANGER_COST*4 {
+      desire = max(target_varying.food, RANGER_COST*4 - varying.food);
+    }
+    else if target_varying.object_type == ObjectType::Palace {
+      desire = varying.food - RANGER_COST*4;
+    }
+    else if target_varying.food < RANGER_COST*2 {
+      desire = max(varying.food, RANGER_COST*2 - target_varying.food);
+    }
+    else {
+      desire = target_varying.food - RANGER_COST*2;
+    }
+    ActionPracticalities {
+      priority: desire,
+      indefinitely_impossible: !(varying.object_type == ObjectType::Peasant && (target_varying.object_type == ObjectType::Palace || target_varying.object_type == ObjectType::Guild)),
+      impossible_outside_range: Some ((self.target.clone(), STRIDE/2)),
+      time_costs: Some ((STANDARD_ACTION_SECOND*10/10, 0, 10)),
+      .. Default::default()
+    }
+  }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
+    if !is_destroyed (accessor, & self.target) {
+      let varying = query (accessor, &object.varying);
+      let target_varying = query (accessor, & self.target.varying);
+      let transfer;
+      if target_varying.object_type == ObjectType::Palace && varying.food < RANGER_COST*4 {
+        transfer = -max(target_varying.food, RANGER_COST*4 - varying.food);
+      }
+      else if target_varying.object_type == ObjectType::Palace {
+        transfer = varying.food - RANGER_COST*4;
+      }
+      else if target_varying.food < RANGER_COST*2 {
+        transfer = max(varying.food, RANGER_COST*2 - target_varying.food);
+      }
+      else {
+        transfer = RANGER_COST*2 - target_varying.food;
+      }
+      modify_object (accessor, object, | varying | {
+        varying.food -= transfer;
+      });
+      modify_object (accessor, & self.target, | varying | {
+        varying.food += transfer;
       });
     }
   }
