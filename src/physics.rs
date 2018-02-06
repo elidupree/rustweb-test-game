@@ -132,6 +132,13 @@ struct ActionPracticalities {
   time_costs: Option <(Amount, Amount, i64)>,
 }
 
+impl ActionPracticalities {
+  fn target_destroyed()->ActionPracticalities {ActionPracticalities {
+    indefinitely_impossible: true,
+    .. Default::default()
+  }}
+}
+
 trait ActionTrait: ::std::fmt::Debug {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities;
   #[allow (unused_variables)]
@@ -721,7 +728,7 @@ impl ActionTrait for SpawnBeast {
             attack_range: STRIDE*2,
             interrupt_range: RANGER_RANGE,
             awareness_range: STRIDE*30,
-            speed: 10*STRIDE/SECOND,
+            speed: 2*STRIDE/SECOND,
             is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
             endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
@@ -755,6 +762,7 @@ impl ActionTrait for Think {
 
 impl ActionTrait for Shoot {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
+    if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
@@ -816,6 +824,7 @@ impl ActionTrait for Disappear {
 // TODO: can't "pursue in order to X" if you are already in range to X
 impl ActionTrait for Pursue {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
+    if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     //let target_varying = query_ref (accessor, & self.target.varying);
     let mut result = self.intention.practicalities(accessor, object);
@@ -860,6 +869,7 @@ impl ActionTrait for Wait {
 
 impl ActionTrait for Collect {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
+    if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
