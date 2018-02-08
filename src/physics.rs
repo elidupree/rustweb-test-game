@@ -34,6 +34,7 @@ pub const SECOND: Time = 1 << 20;
 pub const STRIDE: Coordinate = SECOND << 8;
 pub const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
 pub const PALACE_RADIUS: Coordinate = STRIDE*20;
+pub const BUILDING_GAP: Coordinate = STRIDE*10;
 pub const GUILD_RADIUS: Coordinate = STRIDE*15;
 pub const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*10;
 pub const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
@@ -184,7 +185,7 @@ impl ActionTrait for Action {
 }
 
 define_action_types! {
-  BuildGuild,
+  Build,
   Recruit,
   Think,
   Shoot,
@@ -194,6 +195,7 @@ define_action_types! {
   Collect,
   Wait,
   ExchangeResources,
+  
 }
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
@@ -204,7 +206,7 @@ pub struct Collect {pub target: ObjectHandle,}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Pursue {pub target: ObjectHandle, pub intention: Box <Action>}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub struct BuildGuild;
+pub struct Build {pub building_type: ObjectType}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Recruit {pub recruit_type: ObjectType}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -416,12 +418,14 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
             },
     ObjectType::Guild => ObjectVarying {
               radius: GUILD_RADIUS,
+              food_cost: GUILD_COST,
               max_hitpoints: 20,
               is_building: true,
               .. Default::default()
             },
     ObjectType::Palace => ObjectVarying {
               radius: PALACE_RADIUS,
+              food_cost: PALACE_COST,
               max_hitpoints: 100,
               is_building: true,
               .. Default::default()
@@ -475,6 +479,21 @@ fn can_add_recruit <A: Accessor <Steward = Steward>>(accessor: &A, home: &Object
     ObjectType::Palace => recruit.object_type == ObjectType::Peasant && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Peasant).count() < 1,
     _ => false,
   }
+}
+
+pub fn reserved_food <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Amount {
+  let varying = query_ref (accessor, &object.varying) ;
+  let mut result = 0;
+  if let Some(&SynchronousAction { action_type: Action::Recruit(ref recruit), .. }) = varying.synchronous_action.as_ref() {
+    result += default_stats (accessor, recruit.recruit_type.clone()).food_cost;
+  }
+  for dependent in varying.dependents.iter() {
+    let dependent_varying = query_ref (accessor, &dependent.varying) ;
+    if dependent_varying.is_building && dependent_varying.hitpoints == 0 {
+      result += dependent_varying.food_cost - dependent_varying.food;
+    }
+  }
+  result
 }
 
 pub fn objects_touching_circle <A: Accessor <Steward = Steward>>(accessor: &A, center: Vector, circle_radius: Coordinate)->Vec<ObjectHandle> {
@@ -576,8 +595,10 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
     _=>(),
   }*/
   
-  consider (&mut choices, Action::BuildGuild(BuildGuild));
+  consider (&mut choices, Action::Build(Build {building_type: ObjectType::Guild}));
+  consider (&mut choices, Action::Build(Build {building_type: ObjectType::Palace}));
   consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Ranger }));
+  consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Peasant }));
   consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Beast}));
   consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2}));
   consider (&mut choices, Action::Rest(Rest));
@@ -689,70 +710,75 @@ fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object
 }
 
 
-impl ActionTrait for BuildGuild {
+impl ActionTrait for Build {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query (accessor, &object.varying) ;
-    //hack: this action is still actually "attempt to build a guild or maybe a palace"
+    let stats = default_stats(accessor,self.building_type.clone());
+    let reserved = reserved_food (accessor, object);
+    let priority = if varying.food < stats.food_cost + reserved {
+      -1000
+    }
+    else if varying.object_type == ObjectType::Palace {
+      stats.food_cost
+    }
+    else {
+      -1000
+    };
     ActionPracticalities {
-      indefinitely_impossible: varying.object_type != ObjectType::Palace,
-      priority: 1000,
-      time_costs: Some ((2*STANDARD_ACTION_SECOND, 0, 5)),
+      indefinitely_impossible: !(
+        (varying.is_unit || varying.is_building)
+        && (self.building_type == ObjectType::Guild || self.building_type == ObjectType::Palace)
+      ),
+      priority: priority,
+      time_costs: Some ((1*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
     }
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     let varying = query (accessor, &object.varying) ;
+    let stats = default_stats(accessor,self.building_type.clone());
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut generator = accessor.extended_now().id.to_rng();
-        if varying.dependents.iter().all(| other | query_ref (accessor, & other.varying).object_type != ObjectType::Peasant) {
-        let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
-          ObjectVarying {
-            object_type: ObjectType::Peasant,
-            team: varying.team,
-            home: Some (object.clone()),
-            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut generator, varying.radius + 2*STRIDE)),
-            .. default_stats(accessor, ObjectType::Peasant)
-          },
-        );
-        modify_object (accessor, object, | varying | {
-          varying.dependents.push (new);
-        });
-        return
-        }
-        for attempt in 0..9 {
-          let guild = attempt < 5;
-          let cost = if guild {GUILD_COST} else {PALACE_COST};
-          if varying.food < cost {break;}
-          let minimum_distance = if guild { varying.radius + GUILD_RADIUS + 10*STRIDE } else {PALACE_DISTANCE};
+
+        for attempt in 0..50 {
+          let attempt_distance = 
+            if self.building_type == ObjectType::Palace {PALACE_DISTANCE} else {varying.radius + BUILDING_GAP} + stats.radius + attempt*STRIDE;
           
-          let target_position = position + random_vector_exact_length (&mut generator, if attempt <5 {minimum_distance*(/*attempt/2 +*/ 1)} else {minimum_distance});
+          let target_position = position + random_vector_exact_length (&mut generator, attempt_distance);
           
           if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
           
-          let nearby = objects_touching_circle (accessor, target_position, minimum_distance - varying.radius - TRIVIAL_DISTANCE );
+          let nearby = objects_touching_circle (accessor, target_position, stats.radius + BUILDING_GAP - TRIVIAL_DISTANCE );
           
-          if nearby.into_iter().all (| other | {
+          if nearby.into_iter().any(| other | {
             let other_varying = query_ref (accessor, & other.varying);
-            if is_building (& other_varying) && (guild || other_varying.object_type == ObjectType::Palace) {
-              return false;
-            }
-            true
-          }) {
-            let new = create_object (accessor, object, 0x379661e69cdd5fe7,
-              ObjectVarying {
+            is_building (& other_varying)
+          }) { continue; }
+          
+          if self.building_type == ObjectType::Palace {
+            let nearby = objects_touching_circle (accessor, target_position, PALACE_DISTANCE - TRIVIAL_DISTANCE );
+          
+            if nearby.into_iter().any(| other | {
+              let other_varying = query_ref (accessor, & other.varying);
+              other_varying.object_type == ObjectType::Palace
+            }) { continue; }
+          }
+          
+          let new = create_object (accessor, object, 0x379661e69cdd5fe7,
+            ObjectVarying {
               team: varying.team,
               home: Some (object.clone()),
-              food: if guild {RANGER_COST} else {GUILD_COST},
+              food: 0,
+              hitpoints: 0,
               trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
-              .. default_stats(accessor, if guild {ObjectType::Guild} else {ObjectType::Palace})
+              .. stats.clone()
             }
-            );
-            modify_object (accessor, object, | varying | {
-              varying.food -= cost;
-              varying.dependents.push (new);
-            });
-            break
-          }
+          );
+          modify_object (accessor, object, | varying | {
+            //varying.food -= stats.food_cost;
+            varying.dependents.push (new);
+          });
+          break
         }
 
   }
@@ -944,6 +970,9 @@ impl ExchangeResources {
     if target_varying.object_type == ObjectType::Palace {
       transfer = varying.food - RANGER_COST*4;
     }
+    else if target_varying.hitpoints == 0 {
+      transfer = target_varying.food_cost - target_varying.food;
+    }
     else {
       transfer = RANGER_COST*2 - target_varying.food;
     }
@@ -969,12 +998,33 @@ impl ActionTrait for ExchangeResources {
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     if !is_destroyed (accessor, & self.target) {
       let transfer = self.transfer_amount (accessor, object);
+      let mut finished_building = false;
       modify_object (accessor, object, | varying | {
         varying.food -= transfer;
       });
       modify_object (accessor, & self.target, | varying | {
+        if varying.food == 0 {
+          // TODO remove building construction sites
+        }
         varying.food += transfer;
+        if varying.hitpoints == 0 && varying.food == varying.food_cost {
+          varying.food = 0;
+          varying.hitpoints = varying.max_hitpoints;
+          finished_building = true;
+        }
       });
+      if finished_building {
+        let mut home = None;
+        modify_object (accessor, & self.target, | varying | {
+          home = varying.home.take();
+        });
+        if let Some(home) = home { if !is_destroyed (accessor, & home) {
+          modify_object (accessor, & home, | varying | {
+            varying.dependents.retain (|a| *a != self.target);
+          });
+        }}
+        reconsider_action (accessor, & self.target);
+      }
     }
   }
 }
@@ -1026,7 +1076,7 @@ define_event! {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           team: team,
-          food: GUILD_COST,
+          food: GUILD_COST + RANGER_COST,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
           .. default_stats(accessor, ObjectType::Palace)
         },
