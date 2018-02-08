@@ -484,7 +484,7 @@ fn can_add_recruit <A: Accessor <Steward = Steward>>(accessor: &A, home: &Object
 pub fn reserved_food <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Amount {
   let varying = query_ref (accessor, &object.varying) ;
   let mut result = 0;
-  if let Some(&SynchronousAction { action_type: Action::Recruit(ref recruit), .. }) = varying.synchronous_action.as_ref() {
+  if let Some(&SynchronousAction { achieved: false, action_type: Action::Recruit(ref recruit), .. }) = varying.synchronous_action.as_ref() {
     result += default_stats (accessor, recruit.recruit_type.clone()).food_cost;
   }
   for dependent in varying.dependents.iter() {
@@ -788,8 +788,15 @@ impl ActionTrait for Recruit {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
     let stats = default_stats(accessor,self.recruit_type.clone());
+    let reserved = reserved_food (accessor, object);
+    let priority = if varying.food < stats.food_cost + reserved {
+      -1000
+    }
+    else {
+      1000
+    };
     ActionPracticalities {
-      priority: 1000,
+      priority: priority,
       indefinitely_impossible: !(can_add_recruit (accessor, & varying, & stats) && varying.food >= stats.food_cost),
       time_costs: Some ((10*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
@@ -1101,13 +1108,11 @@ define_event! {
     let action = query_ref(accessor, &self.object.varying).synchronous_action.clone().unwrap();
     action.action_type.achieve (accessor, &self.object);
     if is_destroyed (accessor, & self.object) {return;}
+    modify_object (accessor, & self.object, | varying | {
+      varying.synchronous_action.as_mut().unwrap().achieved = true;
+    });
     if action.progress.evaluate (*accessor.now()) >= action.finish_cost {
       reconsider_action (accessor, & self.object);
-    }
-    else {
-      modify_object (accessor, & self.object, | varying | {
-        varying.synchronous_action.as_mut().unwrap().achieved = true;
-      });
     }
   }
 }
