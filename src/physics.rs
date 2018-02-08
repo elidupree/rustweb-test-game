@@ -395,7 +395,7 @@ pub fn is_building(varying: & ObjectVarying)->bool {
 // ##########################################
 
 #[inline]
-fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type: ObjectType)->ObjectVarying {
+pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type: ObjectType)->ObjectVarying {
   let mut result = match object_type {
     ObjectType::Peasant => ObjectVarying {
             max_hitpoints: 5,
@@ -475,6 +475,15 @@ fn can_add_recruit <A: Accessor <Steward = Steward>>(accessor: &A, home: &Object
     ObjectType::Palace => recruit.object_type == ObjectType::Peasant && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Peasant).count() < 1,
     _ => false,
   }
+}
+
+pub fn objects_touching_circle <A: Accessor <Steward = Steward>>(accessor: &A, center: Vector, circle_radius: Coordinate)->Vec<ObjectHandle> {
+  Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (center), circle_radius as u64), None).into_iter().filter(| object | {
+    let varying = query_ref (accessor, &object.varying) ;
+    let position = varying.trajectory.evaluate (*accessor.now());
+    let center_distance = distance (center, position).max();
+    center_distance <= circle_radius + radius (& varying)
+  }).collect()
 }
 
 
@@ -584,7 +593,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   // Commonly used for characters on long journeys to notice nearby interesting stuff.
   // Optimization: currently, only units can interact with nearby stuff
   if varying.is_unit {        
-    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.interrupt_range as u64), Some (& object));
+    let nearby = objects_touching_circle (accessor, position, varying.interrupt_range);
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
       let other_varying = query_ref (accessor, & other.varying);
@@ -608,7 +617,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   // third pass: there's nothing to do nearby, so it's finally worth it to pay the larger cost of searching for a distant task
   
   if varying.is_unit {
-    let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (position), varying.awareness_range as u64), Some (& object));
+    let nearby = objects_touching_circle (accessor, position, varying.awareness_range);
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
       let other_varying = query_ref (accessor, & other.varying);
@@ -720,14 +729,12 @@ impl ActionTrait for BuildGuild {
           
           if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
           
-          let nearby = Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (target_position), minimum_distance as u64), Some (object));
+          let nearby = objects_touching_circle (accessor, target_position, minimum_distance - varying.radius - TRIVIAL_DISTANCE );
           
           if nearby.into_iter().all (| other | {
             let other_varying = query_ref (accessor, & other.varying);
             if is_building (& other_varying) && (guild || other_varying.object_type == ObjectType::Palace) {
-              let other_position = other_varying.trajectory.evaluate (*accessor.now());
-              let other_distance = distance (target_position, other_position).max();
-              return other_distance + TRIVIAL_DISTANCE >minimum_distance;
+              return false;
             }
             true
           }) {
