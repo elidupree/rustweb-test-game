@@ -395,14 +395,71 @@ pub fn is_building(varying: & ObjectVarying)->bool {
 // ######          behavior           #######
 // ##########################################
 
-
-fn make_palace (mut details: ObjectVarying)->ObjectVarying {
-  details.object_type = ObjectType::Palace;
-  details.hitpoints = 100;
-  details.radius = PALACE_RADIUS;
-  details.is_building = true;
-  details.food = GUILD_COST;
-  details
+#[inline]
+fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type: ObjectType)->ObjectVarying {
+  let mut result = match object_type {
+    ObjectType::Peasant => ObjectVarying {
+            max_hitpoints: 5,
+            radius: STRIDE*1/2,
+            attack_range: STRIDE*2,
+            interrupt_range: STRIDE*6,
+            awareness_range: STRIDE*100,
+            speed: 4*STRIDE/SECOND,
+            is_unit: true,
+            .. Default::default()
+          },
+          
+    ObjectType::Lair => ObjectVarying {
+              radius: STRIDE*8,
+              max_hitpoints: 20,
+              is_building: true,
+              .. Default::default()
+            },
+    ObjectType::Guild => ObjectVarying {
+              radius: GUILD_RADIUS,
+              max_hitpoints: 20,
+              is_building: true,
+              .. Default::default()
+            },
+    ObjectType::Palace => ObjectVarying {
+              radius: PALACE_RADIUS,
+              max_hitpoints: 100,
+              is_building: true,
+              .. Default::default()
+            },
+    ObjectType::Ranger => ObjectVarying {
+            max_hitpoints: 5,
+            radius: STRIDE/2,
+            attack_range: RANGER_RANGE,
+            interrupt_range: RANGER_RANGE,
+            awareness_range: 200*STRIDE,
+            speed: 10*STRIDE/SECOND,
+            is_unit: true,
+            .. Default::default()
+          },
+    ObjectType::Beast => ObjectVarying {
+            max_hitpoints: 5,
+            radius: STRIDE*2/3,
+            attack_range: STRIDE*2,
+            interrupt_range: RANGER_RANGE,
+            awareness_range: STRIDE*30,
+            speed: 2*STRIDE/SECOND,
+            is_unit: true,
+            .. Default::default()
+          },
+    ObjectType::Arrow => ObjectVarying {
+          object_type: ObjectType::Arrow,
+          radius: STRIDE/5,
+          speed: 50*STRIDE/SECOND,
+          .. Default::default()
+        },
+  };
+  result.object_type = object_type;
+  if result.is_unit {
+    result.endurance = LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10);
+  }
+  result.hitpoints = result.max_hitpoints;
+  result
 }
 
 
@@ -629,17 +686,8 @@ impl ActionTrait for BuildGuild {
             object_type: ObjectType::Peasant,
             team: varying.team,
             home: Some (object.clone()),
-            hitpoints: 5,
-            max_hitpoints: 5,
-            radius: STRIDE*1/2,
-            attack_range: STRIDE*2,
-            interrupt_range: STRIDE*6,
-            awareness_range: STRIDE*100,
-            speed: 4*STRIDE/SECOND,
-            is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut generator, varying.radius + 2*STRIDE)),
-            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
-            .. Default::default()
+            .. default_stats(accessor, ObjectType::Peasant)
           },
         );
         modify_object (accessor, object, | varying | {
@@ -668,20 +716,14 @@ impl ActionTrait for BuildGuild {
             }
             true
           }) {
-            let defaults = ObjectVarying {
-              object_type: ObjectType::Guild,
-              radius: GUILD_RADIUS,
-              hitpoints: 20,
-              is_building: true,
-              food: RANGER_COST,
-              
+            let new = create_object (accessor, object, 0x379661e69cdd5fe7,
+              ObjectVarying {
               team: varying.team,
               home: Some (object.clone()),
+              food: if guild {RANGER_COST} else {GUILD_COST},
               trajectory: LinearTrajectory2::constant (*accessor.now(), target_position),
-              .. Default::default()
-            };
-            let new = create_object (accessor, object, 0x379661e69cdd5fe7,
-              if guild {defaults} else {make_palace (defaults)}
+              .. default_stats(accessor, if guild {ObjectType::Guild} else {ObjectType::Palace})
+            }
             );
             modify_object (accessor, object, | varying | {
               varying.food -= cost;
@@ -709,20 +751,10 @@ impl ActionTrait for RecruitRanger {
     
         let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
           ObjectVarying {
-            object_type: ObjectType::Ranger,
             team: varying.team,
             home: Some (object.clone()),
-            hitpoints: 5,
-            max_hitpoints: 5,
-            radius: STRIDE/2,
-            attack_range: RANGER_RANGE,
-            interrupt_range: RANGER_RANGE,
-            awareness_range: 200*STRIDE,
-            speed: 10*STRIDE/SECOND,
-            is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
-            .. Default::default()
+            .. default_stats(accessor, ObjectType::Ranger)
           },
         );
         modify_object (accessor, object, | varying | {
@@ -748,20 +780,10 @@ impl ActionTrait for SpawnBeast {
     let varying = query (accessor, &object.varying) ;
     let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
           ObjectVarying {
-            object_type: ObjectType::Beast,
             team: varying.team,
             home: Some (object.clone()),
-            hitpoints: 5,
-            max_hitpoints: 5,
-            radius: STRIDE*2/3,
-            attack_range: STRIDE*2,
-            interrupt_range: RANGER_RANGE,
-            awareness_range: STRIDE*30,
-            speed: 2*STRIDE/SECOND,
-            is_unit: true,
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            endurance: LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10),
-            .. Default::default()
+            .. default_stats(accessor, ObjectType::Beast)
           },
         );
         modify_object (accessor, object, | varying | varying.dependents.push (new));
@@ -813,13 +835,10 @@ impl ActionTrait for Shoot {
         let other_position = query_ref (accessor, & target.varying).trajectory.evaluate (*accessor.now());
         let new_velocity = normalized_to (other_position - position, 50*STRIDE/SECOND);
         create_object (accessor, object, 0x27706762e4201474, ObjectVarying {
-          object_type: ObjectType::Arrow,
           team: varying.team,
           target: Some(self.target.clone()),
-          radius: STRIDE/5,
-          speed: 50*STRIDE/SECOND,
           trajectory: LinearTrajectory2::new (*accessor.now(), varying.trajectory.evaluate (*accessor.now()), new_velocity),
-          .. Default::default()
+          .. default_stats(accessor, ObjectType::Arrow)
         });
         }
 
@@ -1007,23 +1026,20 @@ define_event! {
     for team in 0..2 {
       set (accessor, &accessor.globals().orders[team], Orders {unit_destination: None });
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
-        make_palace (ObjectVarying {
+        ObjectVarying {
           team: team,
+          food: GUILD_COST,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
-          .. Default::default()
-        }),
+          .. default_stats(accessor, ObjectType::Palace)
+        },
       );
     }
     for index in 0..28 {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (index, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
-          object_type: ObjectType::Lair,
           team: 6,
-          radius: STRIDE*8,
-          is_building: true,
-          hitpoints: 20,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector::new (0, 0) + random_vector_within_length (&mut generator, INITIAL_PALACE_DISTANCE)),
-          .. Default::default()
+          .. default_stats(accessor, ObjectType::Lair)
         },
       );
     }
