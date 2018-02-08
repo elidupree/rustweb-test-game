@@ -185,8 +185,7 @@ impl ActionTrait for Action {
 
 define_action_types! {
   BuildGuild,
-  RecruitRanger,
-  SpawnBeast,
+  Recruit,
   Think,
   Shoot,
   Rest,
@@ -207,9 +206,7 @@ pub struct Pursue {pub target: ObjectHandle, pub intention: Box <Action>}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct BuildGuild;
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub struct RecruitRanger;
-#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub struct SpawnBeast;
+pub struct Recruit {pub recruit_type: ObjectType}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Think;
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -270,6 +267,8 @@ pub struct ObjectVarying {
   
   pub is_building: bool,
   pub is_unit: bool,
+  
+  pub food_cost: Amount,
   
   pub synchronous_action: Option <SynchronousAction>,
   pub ongoing_action: Option <Action>,
@@ -435,6 +434,7 @@ fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type: Ob
             awareness_range: 200*STRIDE,
             speed: 10*STRIDE/SECOND,
             is_unit: true,
+            food_cost: RANGER_COST,
             .. Default::default()
           },
     ObjectType::Beast => ObjectVarying {
@@ -460,6 +460,21 @@ fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type: Ob
   }
   result.hitpoints = result.max_hitpoints;
   result
+}
+
+fn can_add_recruit <A: Accessor <Steward = Steward>>(accessor: &A, home: &ObjectVarying, recruit: &ObjectVarying)->bool {
+  let dependents_varying: Vec<_> = home.dependents.iter().map (| dependent | query_ref (accessor, & dependent.varying)).collect();
+  let current_recruit_varying = match home.synchronous_action.as_ref() {
+    Some(&SynchronousAction { action_type: Action::Recruit(ref recruit), .. }) => Some (default_stats (accessor, recruit.recruit_type.clone())),
+    _=> None,
+  };
+  let dependents_varying = dependents_varying.iter().map (| dependent | &**dependent).filter (| dependent | dependent.hitpoints > 0).chain (current_recruit_varying.iter());
+  match home.object_type {
+    ObjectType::Lair => recruit.object_type == ObjectType::Beast && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Beast).count() < 3,
+    ObjectType::Guild => recruit.object_type == ObjectType::Ranger && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Ranger).count() < 4,
+    ObjectType::Palace => recruit.object_type == ObjectType::Peasant && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Peasant).count() < 1,
+    _ => false,
+  }
 }
 
 
@@ -553,8 +568,8 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   }*/
   
   consider (&mut choices, Action::BuildGuild(BuildGuild));
-  consider (&mut choices, Action::RecruitRanger(RecruitRanger));
-  consider (&mut choices, Action::SpawnBeast(SpawnBeast));
+  consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Ranger }));
+  consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Beast}));
   consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2}));
   consider (&mut choices, Action::Rest(Rest));
   
@@ -736,57 +751,33 @@ impl ActionTrait for BuildGuild {
   }
 }
 
-impl ActionTrait for RecruitRanger {
+impl ActionTrait for Recruit {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
+    let stats = default_stats(accessor,self.recruit_type.clone());
     ActionPracticalities {
       priority: 1000,
-      indefinitely_impossible: varying.object_type != ObjectType::Guild || varying.food < RANGER_COST || varying.dependents.len() >= 4,
+      indefinitely_impossible: !(can_add_recruit (accessor, & varying, & stats) && varying.food >= stats.food_cost),
       time_costs: Some ((10*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
     }
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     let varying = query (accessor, &object.varying) ;
-    
+    let stats = default_stats(accessor,self.recruit_type.clone());
         let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
           ObjectVarying {
             team: varying.team,
             home: Some (object.clone()),
             trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            .. default_stats(accessor, ObjectType::Ranger)
+            .. stats.clone()
           },
         );
         modify_object (accessor, object, | varying | {
-          varying.food -= RANGER_COST;
+          varying.food -= stats.food_cost;
           varying.dependents.push (new);
         });
 
-  }
-}
-
-
-impl ActionTrait for SpawnBeast {
-  fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
-    let varying = query_ref (accessor, &object.varying);
-    ActionPracticalities {
-      priority: 1000,
-      indefinitely_impossible: varying.object_type != ObjectType::Lair || varying.dependents.len() >= 3,
-      time_costs: Some ((25*STANDARD_ACTION_SECOND, 25*STANDARD_ACTION_SECOND, 35)),
-      .. Default::default()
-    }
-  }
-  fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
-    let varying = query (accessor, &object.varying) ;
-    let new = create_object (accessor, object, 0x91db5029ba8b0a4e,
-          ObjectVarying {
-            team: varying.team,
-            home: Some (object.clone()),
-            trajectory: LinearTrajectory2::constant (*accessor.now(),varying.trajectory.evaluate (*accessor.now()) + random_vector_exact_length (&mut accessor.extended_now().id.to_rng(), varying.radius + 2*STRIDE)),
-            .. default_stats(accessor, ObjectType::Beast)
-          },
-        );
-        modify_object (accessor, object, | varying | varying.dependents.push (new));
   }
 }
 
