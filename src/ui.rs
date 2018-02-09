@@ -114,8 +114,16 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       }
     }
   }
-  if let Some(selected) = game.selected_object.as_ref() {js! {
-    selected_info.text (@{format!("{:?}", **selected)});
+  if let Some(selected) = game.selected_object.as_ref() {
+    let varying = query_ref (accessor, & selected.varying);
+  js! {
+    selected_info.empty().append ( //.text (@{format!("{:?}", **selected)});
+      $("<div>").text(@{format!("{:?}", varying.object_type)}),
+      $("<div>").text(@{if varying.hitpoints == 0 { format!("Food: {}/{}", varying.food,varying.food_cost)} else { format!("Food: {}", varying.food)}}),
+      $("<div>").text(@{format!("HP: {}/{}", varying.hitpoints, varying.max_hitpoints)}),
+      $("<div>").text(@{format!("Action: {:?}", varying.synchronous_action)}),
+      $("<div>").text(@{format!("{:?}", **selected)})
+    );
   }}
   js! {
     context.restore();
