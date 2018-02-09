@@ -16,12 +16,15 @@ extern crate time_steward;
 
 #[macro_use]
 mod misc;
+#[macro_use]
+mod physics_infrastructure;
 mod physics;
 mod ui;
 
 pub use time_steward::stewards::{simple_full as steward_module};
 
 pub use misc::*;
+pub use physics_infrastructure::*;
 pub use physics::*;
 pub use ui::*;
 
