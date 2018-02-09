@@ -45,8 +45,8 @@ pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
 
 pub const RANGER_COST: Amount = 200;
 pub const PEASANT_COST: Amount = 200;
-pub const GUILD_COST: Amount = 300;
-pub const PALACE_COST: Amount = 1000;
+pub const GUILD_COST: Amount = 500;
+pub const PALACE_COST: Amount = 5000;
 pub const BEAST_COST: Amount = 200;
 pub const BEAST_REWARD: Amount = 100;
 
@@ -410,6 +410,8 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
     ObjectType::Peasant => ObjectVarying {
             max_hitpoints: 5,
             radius: STRIDE*1/2,
+            food_cost: PEASANT_COST,
+            max_endurance: 200*SECOND,
             attack_range: STRIDE*2,
             interrupt_range: STRIDE*6,
             awareness_range: STRIDE*100,
@@ -441,6 +443,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
     ObjectType::Ranger => ObjectVarying {
             max_hitpoints: 5,
             radius: STRIDE/2,
+            max_endurance: 100*SECOND,
             attack_range: RANGER_RANGE,
             interrupt_range: RANGER_RANGE,
             awareness_range: 200*STRIDE,
@@ -452,6 +455,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
     ObjectType::Beast => ObjectVarying {
             max_hitpoints: 5,
             radius: STRIDE*2/3,
+            max_endurance: 200*SECOND,
             attack_range: STRIDE*2,
             interrupt_range: RANGER_RANGE,
             awareness_range: STRIDE*200,
@@ -473,7 +477,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
   };
   result.object_type = object_type;
   if result.is_unit {
-    result.endurance = LinearTrajectory1::new (*accessor.now(), 600*SECOND, - 10);
+    result.endurance = LinearTrajectory1::new (*accessor.now(), result.max_endurance, -1);
   }
   result.hitpoints = result.max_hitpoints;
   result
@@ -487,7 +491,7 @@ fn can_add_recruit <A: Accessor <Steward = Steward>>(accessor: &A, home: &Object
   };
   let dependents_varying = dependents_varying.iter().map (| dependent | &**dependent).filter (| dependent | dependent.hitpoints > 0).chain (current_recruit_varying.iter());
   match home.object_type {
-    ObjectType::Lair => recruit.object_type == ObjectType::Beast && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Beast).count() < 3,
+    ObjectType::Lair => recruit.object_type == ObjectType::Beast && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Beast).count() < 9,
     ObjectType::Guild => recruit.object_type == ObjectType::Ranger && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Ranger).count() < 4,
     ObjectType::Palace => recruit.object_type == ObjectType::Peasant && dependents_varying.filter (| dependent | dependent.object_type == ObjectType::Peasant).count() < 1,
     _ => false,
@@ -630,15 +634,17 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
     let nearby = objects_touching_circle (accessor, position, varying.interrupt_range);
     for other in nearby {
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
-      let other_varying = query_ref (accessor, & other.varying);
-      let other_position = other_varying.trajectory.evaluate (*accessor.now());
-      let other_distance = distance (position, other_position).max() - radius (& other_varying);
-      if other_distance <= varying.interrupt_range {
-        for choice in interaction_choices (accessor, object, &other) {
+      for choice in interaction_choices (accessor, object, &other) {
+        consider (&mut choices, choice,);
+      }
+    }
+    if let Some(home) = varying.home.as_ref() { if !is_destroyed(accessor, home) {
+      for dependent in query_ref (accessor, & home.varying).dependents.iter() {
+        for choice in interaction_choices (accessor, object, dependent ) {
           consider (&mut choices, choice,);
         }
       }
-    }
+    }}
   }
     
   choices.sort_by_key (| choice | choice.1.priority);
@@ -657,7 +663,7 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
       let other_varying = query_ref (accessor, & other.varying);
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
       let other_distance = distance (position, other_position).max() - radius (& other_varying);
-      if other_distance > varying.interrupt_range && other_distance <= varying.awareness_range {
+      if other_distance > varying.interrupt_range {
         for choice in interaction_choices (accessor, object, &other) {
           consider (&mut choices, choice);
         }
@@ -1000,7 +1006,7 @@ impl ExchangeResources {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     let mut transfer;
-    if target_varying.object_type == ObjectType::Palace {
+    if target_varying.object_type == ObjectType::Palace && target_varying.hitpoints > 0 {
       transfer = varying.food - RANGER_COST*4;
     }
     else if target_varying.hitpoints == 0 {
@@ -1019,12 +1025,13 @@ impl ActionTrait for ExchangeResources {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
-    let desire = self.transfer_amount (accessor, object).abs();
+    let transfer = self.transfer_amount (accessor, object);
+    let desire = if transfer > 0 {transfer*100} else {-transfer};
     ActionPracticalities {
       priority: desire,
       indefinitely_impossible: !(varying.object_type == ObjectType::Peasant && (target_varying.object_type == ObjectType::Palace || target_varying.object_type == ObjectType::Guild)),
       impossible_outside_range: Some ((self.target.clone(), STRIDE/2)),
-      time_costs: Some ((STANDARD_ACTION_SECOND*10/10, 0, 10)),
+      time_costs: Some ((STANDARD_ACTION_SECOND*5, 0, 10)),
       .. Default::default()
     }
   }
@@ -1070,7 +1077,7 @@ impl ActionTrait for Rest {
     if let Some(home) = varying.home.as_ref() {
       if !is_destroyed (accessor, home) {
         return ActionPracticalities {
-          priority: 200*SECOND - varying.endurance.evaluate (*accessor.now()),
+          priority: varying.max_endurance/3 - varying.endurance.evaluate (*accessor.now()),
           indefinitely_impossible: !varying.is_unit,
           impossible_outside_range: Some ((home.clone(), STRIDE)),
           time_costs: Some ((STANDARD_ACTION_SECOND*20, 0, 5)),
@@ -1091,7 +1098,7 @@ impl ActionTrait for Rest {
           modify_object (accessor, home, | other_varying | other_varying.food += varying.food);
         }
         modify_object (accessor, object, | varying | {
-          varying.endurance.set (*accessor.now(), 600*SECOND);
+          varying.endurance.set (*accessor.now(), varying.max_endurance);
         });
   }
 }
