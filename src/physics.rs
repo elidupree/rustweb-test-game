@@ -452,7 +452,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
             radius: STRIDE*2/3,
             attack_range: STRIDE*2,
             interrupt_range: RANGER_RANGE,
-            awareness_range: STRIDE*30,
+            awareness_range: STRIDE*60,
             speed: 2*STRIDE/SECOND,
             is_unit: true,
             .. Default::default()
@@ -463,6 +463,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
           .. Default::default()
         },
     ObjectType::Fruit => ObjectVarying {
+          max_hitpoints: 0,
           radius: STRIDE/4,
           .. Default::default()
         },
@@ -958,15 +959,23 @@ impl ActionTrait for Wait {
 }
 
 
-
+impl Collect {
+  fn reward <A: Accessor <Steward = Steward>> (&self, accessor: &A, _object: &ObjectHandle)->Amount {
+    let target_varying = query_ref (accessor, & self.target.varying);
+    if target_varying.object_type == ObjectType::Fruit {100} else {BEAST_REWARD}
+  }
+}
 impl ActionTrait for Collect {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: COMBAT_PRIORITY + 1000,
-      indefinitely_impossible: !(varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0),
+      priority: self.reward(accessor, object),
+      indefinitely_impossible: !(
+        (varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0)
+        || (varying.is_unit && target_varying.object_type == ObjectType::Fruit)
+      ),
       impossible_outside_range: Some ((self.target.clone(), STRIDE/2)),
       time_costs: Some ((STANDARD_ACTION_SECOND*10/10, 0, 10)),
       .. Default::default()
@@ -974,9 +983,10 @@ impl ActionTrait for Collect {
   }
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     if !is_destroyed (accessor, & self.target) {
+      let reward = self.reward(accessor, object);
       destroy_object (accessor, & self.target);
       modify_object (accessor, object, | varying | {
-        varying.food += BEAST_REWARD;
+        varying.food += reward;
       });
     }
   }
@@ -1185,7 +1195,7 @@ define_event! {
   pub struct GenerateFruit {},
   PersistentTypeId(0x0874667e420524f7),
   fn execute (&self, accessor: &mut Accessor) {
-    set (accessor, &accessor.globals().next_fruit_prediction, accessor.create_prediction (accessor.now() + SECOND/10, DeterministicRandomId::new (& (accessor.extended_now().id, 0x8459d2d1496d5f23u64)), GenerateFruit {}));
+    set (accessor, &accessor.globals().next_fruit_prediction, accessor.create_prediction (accessor.now() + SECOND, DeterministicRandomId::new (& (accessor.extended_now().id, 0x8459d2d1496d5f23u64)), GenerateFruit {}));
     
     create_object_impl (accessor, None, DeterministicRandomId::new (& (accessor.extended_now().id, 0x61b3d4d2ab30e0abu64)),
       ObjectVarying {
