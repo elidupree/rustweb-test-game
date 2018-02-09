@@ -30,7 +30,7 @@ pub struct Game {
 }
 
 pub fn make_game(seed_id: DeterministicRandomId)->Game {
-  let mut steward: Steward = Steward::from_globals (Globals {detector: new_timeline(), orders:[new_timeline(), new_timeline()]});
+  let mut steward: Steward = Steward::from_globals (Globals::default());
   steward.insert_fiat_event (0, seed_id, Initialize {}).unwrap();
   Game {
     steward: steward,
