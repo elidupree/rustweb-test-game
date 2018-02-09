@@ -43,9 +43,11 @@ pub const RANGER_RANGE: Coordinate = STRIDE*20;
 pub const STANDARD_ACTION_SPEED: Progress = 60;
 pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
 
-pub const RANGER_COST: Amount = 50;
-pub const GUILD_COST: Amount = 150;
+pub const RANGER_COST: Amount = 200;
+pub const PEASANT_COST: Amount = 200;
+pub const GUILD_COST: Amount = 300;
 pub const PALACE_COST: Amount = 1000;
+pub const BEAST_COST: Amount = 200;
 pub const BEAST_REWARD: Amount = 100;
 
 pub const COMBAT_PRIORITY: Amount = 1<<40;
@@ -452,9 +454,10 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
             radius: STRIDE*2/3,
             attack_range: STRIDE*2,
             interrupt_range: RANGER_RANGE,
-            awareness_range: STRIDE*60,
+            awareness_range: STRIDE*200,
             speed: 2*STRIDE/SECOND,
             is_unit: true,
+            food_cost: BEAST_COST,
             .. Default::default()
           },
     ObjectType::Arrow => ObjectVarying {
@@ -862,7 +865,7 @@ impl ActionTrait for Shoot {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: 2000*if is_enemy (accessor, object, & self.target) {1} else {-1},
+      priority: 100*if is_enemy (accessor, object, & self.target) {1} else {-1},
       indefinitely_impossible: !(varying.is_unit && varying.object_type != ObjectType::Peasant && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
@@ -1107,7 +1110,7 @@ define_event! {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           team: team,
-          food: GUILD_COST + RANGER_COST,
+          food: PEASANT_COST + GUILD_COST + RANGER_COST,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
           .. default_stats(accessor, ObjectType::Palace)
         },
@@ -1117,6 +1120,7 @@ define_event! {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (index, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           team: 6,
+          food: BEAST_COST,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector::new (0, 0) + random_vector_within_length (&mut generator, INITIAL_PALACE_DISTANCE)),
           .. default_stats(accessor, ObjectType::Lair)
         },
