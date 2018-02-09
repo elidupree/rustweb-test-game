@@ -108,10 +108,15 @@ impl BasicsTrait for Basics {
   const MAX_ITERATION: u32 = 50;
 }
 
-#[derive (Serialize, Deserialize, Debug)]
+#[derive (Serialize, Deserialize, Debug, Derivative)]
+#[derivative (Default)]
 pub struct Globals {
+  #[derivative (Default (value = "new_timeline()"))]
   pub detector: Timeline <DataHandle <Detector>>,
+  #[derivative (Default (value = "[new_timeline(), new_timeline()]"))]
   pub orders: [Timeline <Orders>; 2],
+  #[derivative (Default (value = "new_timeline()"))]
+  pub next_fruit_prediction: Timeline <EventHandle>,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -123,6 +128,7 @@ pub enum ObjectType {
   Ranger,
   Arrow,
   Peasant,
+  Fruit,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
@@ -452,9 +458,12 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
             .. Default::default()
           },
     ObjectType::Arrow => ObjectVarying {
-          object_type: ObjectType::Arrow,
           radius: STRIDE/5,
           speed: 50*STRIDE/SECOND,
+          .. Default::default()
+        },
+    ObjectType::Fruit => ObjectVarying {
+          radius: STRIDE/4,
           .. Default::default()
         },
   };
@@ -1082,6 +1091,7 @@ define_event! {
   fn execute (&self, accessor: &mut Accessor) {
     let mut generator = accessor.extended_now().id.to_rng();
     set (accessor, &accessor.globals().detector, SimpleGridDetector::new (accessor, Space, (STRIDE*50) as collisions::Coordinate));
+    set (accessor, &accessor.globals().next_fruit_prediction, accessor.create_prediction (*accessor.now(), DeterministicRandomId::new (& (accessor.extended_now().id, 0x8459d2d1496d5f23u64)), GenerateFruit {}));
     for team in 0..2 {
       set (accessor, &accessor.globals().orders[team], Orders {unit_destination: None });
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
@@ -1168,5 +1178,21 @@ define_event! {
   PersistentTypeId(0x4c9df89d55f6ab36),
   fn execute (&self, accessor: &mut Accessor) {
     set (accessor, &accessor.globals().orders[self.team], self.orders.clone());
+  }
+}
+
+define_event! {
+  pub struct GenerateFruit {},
+  PersistentTypeId(0x0874667e420524f7),
+  fn execute (&self, accessor: &mut Accessor) {
+    set (accessor, &accessor.globals().next_fruit_prediction, accessor.create_prediction (accessor.now() + SECOND/10, DeterministicRandomId::new (& (accessor.extended_now().id, 0x8459d2d1496d5f23u64)), GenerateFruit {}));
+    
+    create_object_impl (accessor, None, DeterministicRandomId::new (& (accessor.extended_now().id, 0x61b3d4d2ab30e0abu64)),
+      ObjectVarying {
+        team: 6,
+        trajectory: LinearTrajectory2::constant (*accessor.now(), Vector::new (0, 0) + random_vector_within_length (&mut accessor.extended_now().id.to_rng(), INITIAL_PALACE_DISTANCE)),
+        .. default_stats(accessor, ObjectType::Fruit)
+      },
+    );
   }
 }
