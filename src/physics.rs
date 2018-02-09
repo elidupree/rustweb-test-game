@@ -739,6 +739,8 @@ impl ActionTrait for Build {
     let stats = default_stats(accessor,self.building_type.clone());
         let position = varying.trajectory.evaluate (*accessor.now());
         let mut generator = accessor.extended_now().id.to_rng();
+        
+        // TODO: search for abandoned construction sites first
 
         for attempt in 0..50 {
           let attempt_distance = 
@@ -747,6 +749,8 @@ impl ActionTrait for Build {
           let target_position = position + random_vector_exact_length (&mut generator, attempt_distance);
           
           if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
+          
+          // TODO: don't respect unbuilt enemy buildings
           
           let nearby = objects_touching_circle (accessor, target_position, stats.radius + BUILDING_GAP - TRIVIAL_DISTANCE );
           
