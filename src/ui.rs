@@ -120,7 +120,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
   js! {
     selected_info.empty().append ( //.text (@{format!("{:?}", **selected)});
       $("<div>").text(@{format!("{:?}", varying.object_type)}),
-      $("<div>").text(@{if varying.hitpoints == 0 { format!("Food: {}/{}", varying.food,varying.food_cost)} else { format!("Food: {}", varying.food)}}),
+      $("<div>").text(@{if varying.hitpoints == 0 { format!("Food: ~{}/{}", varying.food/STANDARD_FOOD_UPKEEP_PER_SECOND,varying.food_cost/STANDARD_FOOD_UPKEEP_PER_SECOND)} else { format!("Food: ~{}", varying.food/STANDARD_FOOD_UPKEEP_PER_SECOND)}}),
       $("<div>").text(@{format!("HP: {}/{}", varying.hitpoints, varying.max_hitpoints)}),
       $("<div>").text(@{format!("Endurance: {}%", varying.endurance.evaluate (*accessor.now())*100/max(1, varying.max_endurance))}),
       $("<div>").text(@{

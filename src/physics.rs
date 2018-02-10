@@ -14,6 +14,8 @@ use self::simple_timeline::{query, query_ref, set};
 use self::collisions::{Detector as DetectorTrait};
 use self::collisions::simple_grid::{SimpleGridDetector};
 
+use time_steward::support::rounding_error_tolerant_math::Range;
+
 
 pub const STRIDE: Coordinate = SECOND << 8;
 pub const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
@@ -40,7 +42,7 @@ pub const FRUIT_REWARD: Amount = STANDARD_FOOD_UPKEEP_PER_SECOND*2284;
 
 pub const RANGER_COST: Amount = STANDARD_UNIT_COST;
 pub const PEASANT_COST: Amount = STANDARD_UNIT_COST;
-pub const GUILD_COST: Amount = STANDARD_UNIT_COST*3;
+pub const GUILD_COST: Amount = STANDARD_UNIT_COST*4;
 pub const PALACE_COST: Amount = STANDARD_UNIT_COST*30;
 pub const BEAST_COST: Amount = STANDARD_UNIT_COST;
 pub const BEAST_REWARD: Amount = STANDARD_UNIT_COST/2;
@@ -909,13 +911,21 @@ impl ActionTrait for Rest {
   fn achieve <A: EventAccessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle) {
     let varying = query (accessor, &object.varying) ;
     let home = varying.home.as_ref().unwrap();
-        if !is_destroyed (accessor, home) {
-          modify_object (accessor, object, | varying | varying.food = 0);
-          modify_object (accessor, home, | other_varying | other_varying.food += varying.food);
-        }
-        modify_object (accessor, object, | varying | {
-          varying.endurance.set (*accessor.now(), varying.max_endurance);
-        });
+    if !is_destroyed (accessor, home) {
+      let home_varying = query (accessor, & home.varying);
+      let total_food = home_varying.food + varying.food;
+      let current_endurance = varying.endurance.evaluate (*accessor.now());
+      let endurance_deficiency = varying.max_endurance - current_endurance;
+      let desired_food = (Range::exactly (endurance_deficiency)*STANDARD_FOOD_UPKEEP_PER_SECOND/Range::exactly (SECOND)).min();
+      let consumed_food = min (total_food, desired_food);
+      let restored_endurance = (Range::exactly (consumed_food) * (SECOND) / Range::exactly (STANDARD_FOOD_UPKEEP_PER_SECOND)).min();
+      //printlnerr!("{:?}", (consumed_food, consumed_food/STANDARD_FOOD_UPKEEP_PER_SECOND, restored_endurance,restored_endurance/SECOND, restored_endurance*100/varying.max_endurance));
+      modify_object (accessor, object, | varying | varying.food = 0);
+      modify_object (accessor, home, | other_varying | other_varying.food = total_food - consumed_food);
+      modify_object (accessor, object, | varying | {
+        varying.endurance.set (*accessor.now(), current_endurance + restored_endurance);
+      });
+    }
   }
 }
 
@@ -933,7 +943,7 @@ define_event! {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (team, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           team: team,
-          food: PEASANT_COST + GUILD_COST + RANGER_COST,
+          food: PEASANT_COST + PEASANT_COST + GUILD_COST + RANGER_COST,
           trajectory: LinearTrajectory2::constant (*accessor.now(), Vector2::new (0, INITIAL_PALACE_DISTANCE*team as Coordinate*2 - INITIAL_PALACE_DISTANCE)),
           .. default_stats(accessor, ObjectType::Palace)
         },
