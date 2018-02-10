@@ -121,7 +121,15 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       $("<div>").text(@{format!("{:?}", varying.object_type)}),
       $("<div>").text(@{if varying.hitpoints == 0 { format!("Food: {}/{}", varying.food,varying.food_cost)} else { format!("Food: {}", varying.food)}}),
       $("<div>").text(@{format!("HP: {}/{}", varying.hitpoints, varying.max_hitpoints)}),
-      $("<div>").text(@{format!("Action: {:?}", varying.synchronous_action)}),
+      $("<div>").text(@{
+        match varying.synchronous_action {
+          None => format!("Action: {:?}", varying.synchronous_action),
+          Some (ref synchronous) => match varying.ongoing_action {
+            None => format!("Action: {:?}", synchronous.action_type),
+            Some (ref ongoing) =>  format!("Action: {:?}/{:?}", synchronous.action_type, ongoing),
+          },
+        }
+      }),
       $("<div>").text(@{format!("{:?}", **selected)})
     );
   }}
