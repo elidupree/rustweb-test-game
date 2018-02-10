@@ -2,6 +2,7 @@ use super::*;
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::cmp::max;
 
 use stdweb::web;
 use stdweb::unstable::TryInto;
@@ -121,6 +122,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       $("<div>").text(@{format!("{:?}", varying.object_type)}),
       $("<div>").text(@{if varying.hitpoints == 0 { format!("Food: {}/{}", varying.food,varying.food_cost)} else { format!("Food: {}", varying.food)}}),
       $("<div>").text(@{format!("HP: {}/{}", varying.hitpoints, varying.max_hitpoints)}),
+      $("<div>").text(@{format!("Endurance: {}%", varying.endurance.evaluate (*accessor.now())*100/max(1, varying.max_endurance))}),
       $("<div>").text(@{
         match varying.synchronous_action {
           None => format!("Action: {:?}", varying.synchronous_action),
