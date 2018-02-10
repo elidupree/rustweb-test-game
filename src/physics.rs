@@ -32,7 +32,8 @@ pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
 pub const SECONDS_PER_DAY: Time = 10*60;
 
 pub const STANDARD_FOOD_UPKEEP_PER_SECOND: Amount = SECOND*60;
-pub const STANDARD_UNIT_COST: Amount = STANDARD_FOOD_UPKEEP_PER_SECOND*SECONDS_PER_DAY;    
+pub const STANDARD_FOOD_UPKEEP_PER_DAY: Amount = STANDARD_FOOD_UPKEEP_PER_SECOND*SECONDS_PER_DAY;
+pub const STANDARD_UNIT_COST: Amount = STANDARD_FOOD_UPKEEP_PER_DAY;    
     // fruit is generated once per second in an area with a radius of INITIAL_PALACE_DISTANCE
     // 1000 square strides should support one unit
     // 
@@ -335,6 +336,9 @@ pub fn reserved_food <A: Accessor <Steward = Steward>>(accessor: &A, object: &Ob
     let dependent_varying = query_ref (accessor, &dependent.varying) ;
     if dependent_varying.is_building && dependent_varying.hitpoints == 0 {
       result += dependent_varying.food_cost - dependent_varying.food;
+    }
+    if dependent_varying.is_unit && dependent_varying.hitpoints > 0 {
+      result += STANDARD_FOOD_UPKEEP_PER_DAY;
     }
   }
   result
@@ -831,7 +835,7 @@ impl ExchangeResources {
       transfer = target_varying.food_cost - target_varying.food;
     }
     else {
-      transfer = RANGER_COST*2 - target_varying.food;
+      transfer = (reserved_food (accessor, & self.target) + RANGER_COST*2) - target_varying.food;
     }
     transfer = min (varying.food, transfer);
     transfer = max (-target_varying.food, transfer);
