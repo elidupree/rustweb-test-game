@@ -17,22 +17,33 @@ use self::collisions::simple_grid::{SimpleGridDetector};
 
 pub const STRIDE: Coordinate = SECOND << 8;
 pub const TRIVIAL_DISTANCE: Coordinate = STRIDE>>8;
-pub const PALACE_RADIUS: Coordinate = STRIDE*20;
-pub const BUILDING_GAP: Coordinate = STRIDE*10;
-pub const GUILD_RADIUS: Coordinate = STRIDE*15;
-pub const PALACE_DISTANCE: Coordinate = PALACE_RADIUS*10;
+pub const PALACE_RADIUS: Coordinate = STRIDE*5;
+pub const BUILDING_GAP: Coordinate = STRIDE*3;
+pub const GUILD_RADIUS: Coordinate = STRIDE*7/2;
+pub const PALACE_DISTANCE: Coordinate = 282*STRIDE;
 pub const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
 pub const RANGER_RANGE: Coordinate = STRIDE*20;
 
 pub const STANDARD_ACTION_SPEED: Progress = 60;
 pub const STANDARD_ACTION_SECOND: Progress = STANDARD_ACTION_SPEED*SECOND;
 
-pub const RANGER_COST: Amount = 200;
-pub const PEASANT_COST: Amount = 200;
-pub const GUILD_COST: Amount = 500;
-pub const PALACE_COST: Amount = 5000;
-pub const BEAST_COST: Amount = 200;
-pub const BEAST_REWARD: Amount = 100;
+pub const SECONDS_PER_DAY: Time = 10*60;
+
+pub const STANDARD_FOOD_UPKEEP_PER_SECOND: Amount = SECOND*60;
+pub const STANDARD_UNIT_COST: Amount = STANDARD_FOOD_UPKEEP_PER_SECOND*SECONDS_PER_DAY;    
+    // fruit is generated once per second in an area with a radius of INITIAL_PALACE_DISTANCE
+    // 1000 square strides should support one unit
+    // 
+    // FRUIT_REWARD/pi*(INITIAL_PALACE_DISTANCE/STRIDE)^2 = STANDARD_FOOD_UPKEEP_PER_SECOND/1000
+    //I did the math directly because we can't use sqrt in constant definitions and this is a hack anyway
+pub const FRUIT_REWARD: Amount = STANDARD_FOOD_UPKEEP_PER_SECOND*2284;
+
+pub const RANGER_COST: Amount = STANDARD_UNIT_COST;
+pub const PEASANT_COST: Amount = STANDARD_UNIT_COST;
+pub const GUILD_COST: Amount = STANDARD_UNIT_COST*3;
+pub const PALACE_COST: Amount = STANDARD_UNIT_COST*30;
+pub const BEAST_COST: Amount = STANDARD_UNIT_COST;
+pub const BEAST_REWARD: Amount = STANDARD_UNIT_COST/2;
 
 pub const COMBAT_PRIORITY: Amount = 1<<40;
 
@@ -235,7 +246,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
           },
           
     ObjectType::Lair => ObjectVarying {
-              radius: STRIDE*8,
+              radius: GUILD_RADIUS*2/3,
               max_hitpoints: 20,
               is_building: true,
               .. Default::default()
@@ -776,7 +787,7 @@ impl ActionTrait for Wait {
 impl Collect {
   fn reward <A: Accessor <Steward = Steward>> (&self, accessor: &A, _object: &ObjectHandle)->Amount {
     let target_varying = query_ref (accessor, & self.target.varying);
-    if target_varying.object_type == ObjectType::Fruit {100} else {BEAST_REWARD}
+    if target_varying.object_type == ObjectType::Fruit {FRUIT_REWARD} else {BEAST_REWARD}
   }
 }
 impl ActionTrait for Collect {
