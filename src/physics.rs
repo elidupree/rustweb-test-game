@@ -23,6 +23,7 @@ pub const PALACE_RADIUS: Coordinate = STRIDE*5;
 pub const BUILDING_GAP: Coordinate = STRIDE*3;
 pub const GUILD_RADIUS: Coordinate = STRIDE*7/2;
 pub const PALACE_DISTANCE: Coordinate = 282*STRIDE;
+pub const PALACE_RESPONSIBILITY_RANGE: Coordinate = PALACE_DISTANCE/2;
 pub const INITIAL_PALACE_DISTANCE: Coordinate = PALACE_DISTANCE*3;
 pub const RANGER_RANGE: Coordinate = STRIDE*20;
 
@@ -265,6 +266,7 @@ pub fn default_stats <A: Accessor <Steward = Steward>>(accessor: &A, object_type
               radius: PALACE_RADIUS,
               food_cost: PALACE_COST,
               max_hitpoints: 100,
+              awareness_range: PALACE_RESPONSIBILITY_RANGE,
               is_building: true,
               .. Default::default()
             },
@@ -339,6 +341,18 @@ pub fn reserved_food <A: Accessor <Steward = Steward>>(accessor: &A, object: &Ob
     }
     if dependent_varying.is_unit && dependent_varying.hitpoints > 0 {
       result += STANDARD_FOOD_UPKEEP_PER_DAY;
+    }
+  }
+  if varying.object_type == ObjectType::Palace {
+    let position = varying.trajectory.evaluate (*accessor.now());
+    for other in objects_touching_circle (accessor, position, varying.awareness_range) {
+      let other_varying = query_ref (accessor, & other.varying);
+      if other_varying.is_building && other_varying.object_type != ObjectType::Palace && other_varying.hitpoints > 0 {
+        let other_debt = reserved_food (accessor, & other) - other_varying.food;
+        if other_debt >0 {
+          result += other_debt;
+        }
+      }
     }
   }
   result
