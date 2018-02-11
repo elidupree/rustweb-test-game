@@ -145,7 +145,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
 }
 
 pub fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
-  let continue_simulating;
+  //let continue_simulating;
   {
     let mut game = game.borrow_mut();
     let observed_duration = time - game.last_ui_time;
@@ -159,12 +159,12 @@ pub fn main_loop (time: f64, game: Rc<RefCell<Game>>) {
     draw_game (& snapshot, & game);
     game.steward.forget_before (&now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
-    continue_simulating = teams_alive.len() > 1;
+    /*let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    continue_simulating = teams_alive.len() > 1;*/
   }
-  if continue_simulating {
+  //if continue_simulating {
     web::window().request_animation_frame (move | time | main_loop (time, game));
-  }
+  //}
 }
 
 
@@ -315,12 +315,12 @@ pub fn run() {
     let snapshot = game.steward.snapshot_before (& game.now). unwrap ();
     game.steward.forget_before (& game.now);
   
-    let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().filter (| object | is_building (&query_ref (& snapshot, & object.varying))).map (| object | query_ref (& snapshot, & object.varying).team).collect();
+    /*let teams_alive: std::collections::HashSet <_> = Detector::objects_near_box (& snapshot, & get_detector (& snapshot), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None).into_iter().filter (| object | is_building (&query_ref (& snapshot, & object.varying))).map (| object | query_ref (& snapshot, & object.varying).team).collect();
     if teams_alive.len() <= 1 {
       scores [teams_alive.into_iter().next().unwrap()] += 1;
       println!("{:?}", scores);
       break;
-    }
+    }*/
   }
   }
 }
