@@ -83,7 +83,8 @@ pub enum ObjectType {
 pub struct ActionPracticalities {
   indefinitely_impossible: bool,
   impossible_outside_range: Option <(ObjectHandle, Coordinate)>,
-  priority: Amount,
+  value: Amount,
+  expected_time_taken: Time,
   time_costs: Option <(Amount, Amount, i64)>,
 }
 
@@ -411,43 +412,56 @@ fn interaction_choices <A: Accessor <Steward = Steward>>(_accessor: &A, _object:
   result
 }
 
-fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct AnalyzedChoice {
+  action: Action,
+  practicalities: ActionPracticalities,
+  priority: Amount,
+}
+
+pub fn action_practicalities <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: &Action)->ActionPracticalities {
+  let mut result = action.practicalities (accessor, object) ;
+  if let Some(time_costs) = result.time_costs.as_mut() {
+    time_costs.1 = max(time_costs.0, time_costs.1);
+    result.expected_time_taken = time_costs.1/STANDARD_ACTION_SPEED;
+  }
+  result
+}
+
+pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Vec<AnalyzedChoice> {
   let varying = query_ref (accessor, &object.varying) ;
   let position = varying.trajectory.evaluate (*accessor.now());
-  let mut choices: Vec<(Action, ActionPracticalities)> = Vec::new();
-  let consider = | choices: &mut Vec<(Action, ActionPracticalities)>, action: Action | consider_impl(accessor, object, choices, action);
-  fn consider_impl <A: Accessor <Steward = Steward>> (accessor: &A, object: &ObjectHandle, choices: &mut Vec<(Action, ActionPracticalities)>, action: Action) {
+  let mut choices: Vec<AnalyzedChoice> = Vec::new();
+  let consider = | choices: &mut Vec<AnalyzedChoice>, action: Action | consider_impl(accessor, object, choices, action);
+  fn consider_impl <A: Accessor <Steward = Steward>> (accessor: &A, object: &ObjectHandle, choices: &mut Vec<AnalyzedChoice>, action: Action) {
     let varying = query_ref (accessor, &object.varying) ;
-    let practicalities = action.practicalities (accessor, object);
+    let practicalities = action_practicalities (accessor, object, & action);
     //if varying.object_type == ObjectType::Ranger {printlnerr!("{:?}", (&action, &practicalities));}
-    if !practicalities.indefinitely_impossible {
-      if let Some(limit) = practicalities.impossible_outside_range.clone() {
-        let location = varying.trajectory.evaluate (*accessor.now());
-        let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
-        let target_distance = distance (location, target_location).max();
-        if target_distance <= limit.1 {
-          choices.push ((action.clone(), practicalities));
-        }
-        consider_impl (accessor, object, choices, Action::Pursue (Pursue {target: limit.0, intention: Box::new (action.clone())}));
+    let mut priority = -1000000000;
+    let mut possible = true;
+    if practicalities.indefinitely_impossible { possible = false; }
+    if let Some(limit) = practicalities.impossible_outside_range.clone() {
+      let location = varying.trajectory.evaluate (*accessor.now());
+      let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
+      let target_distance = distance (location, target_location).max();
+      if target_distance > limit.1 {
+        possible = false;
       }
-      else {
-        choices.push ((action.clone(), practicalities));
-      }
+      consider_impl (accessor, object, choices, Action::Pursue (Pursue {target: limit.0, intention: Box::new (action.clone())}));
     }
+    if possible {
+      priority = practicalities.value.signum() * (Range::exactly (practicalities.value.abs())*SECOND/Range::exactly (practicalities.expected_time_taken+1)).max();
+      assert_eq!(priority.signum(), practicalities.value.signum()) ;
+    }
+    choices.push (AnalyzedChoice {action: action, practicalities: practicalities, priority: priority});
   };
   
   // first pass: cheapest calculations.
   if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
     consider (&mut choices, current.clone());
   }
-  /*match varying.object_type.clone() {
-    ObjectType::Palace => consider (&mut choices, Action::BuildGuild(BuildGuild)),
-    ObjectType::Guild => consider (&mut choices, Action::RecruitRanger(RecruitRanger)),
-    ObjectType::Lair => consider (&mut choices, Action::SpawnBeast(SpawnBeast)),
-    ObjectType::Arrow => consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2})),
-    _=>(),
-  }*/
-  
+
+  consider (&mut choices, Action::Wait(Wait));  
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Guild}));
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Palace}));
   consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Ranger }));
@@ -456,10 +470,10 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
   consider (&mut choices, Action::Disappear(Disappear {time: SECOND*1/2}));
   consider (&mut choices, Action::Rest(Rest));
   
-  choices.sort_by_key (| choice | choice.1.priority);
-  if let Some(best) = choices.last() {
-    if best.1.priority>=COMBAT_PRIORITY {
-      return best.0.clone()
+  choices.sort_by_key (| choice | -choice.priority);
+  if let Some(&AnalyzedChoice {priority, ..}) = choices.first() {
+    if priority >= COMBAT_PRIORITY {
+      return choices
     }
   }
   
@@ -483,10 +497,10 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
     }}
   }
     
-  choices.sort_by_key (| choice | choice.1.priority);
-  if let Some(best) = choices.last() {
-    if best.1.priority> 0{
-      return best.0.clone()
+  choices.sort_by_key (| choice | -choice.priority);
+  if let Some(&AnalyzedChoice {priority, ..}) = choices.first() {
+    if priority > 0{
+      return choices
     }
   }
   
@@ -507,23 +521,22 @@ fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &Object
     }
   }
   
-  choices.sort_by_key (| choice | choice.1.priority);
-  if let Some(best) = choices.last() {
-    if best.1.priority> 0{
-      return best.0.clone()
-    }
-  }
-  
-  Action::Wait(Wait)
+  choices.sort_by_key (| choice | -choice.priority);
+  choices
+}
 
-  
+fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
+  let choices = analyzed_choices (accessor, object);
+  let result = choices.first().unwrap();
+  //printlnerr!("{:?}", choices);
+  assert!(result.priority >= 0);
+  result.action.clone()
 }
 
 
 fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, action: Action, costs: (Amount, Amount, i64))->SynchronousAction {
   let mut generator = DeterministicRandomId::new (& (accessor.extended_now().id, 0x7b017f025975dd1du64)).to_rng();
-  let (achieve_cost, mut finish_cost, variability_percent) = costs;
-  finish_cost = max(achieve_cost, finish_cost);
+  let (achieve_cost, finish_cost, variability_percent) = costs;
   let modifier = generator.gen_range (100 - variability_percent, 100 + variability_percent + 1);
   SynchronousAction {
     action_type: action.clone(),
@@ -536,7 +549,7 @@ fn make_synchronous_action <A: EventAccessor <Steward = Steward>>(accessor: &A, 
 pub fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, action: Option<Action>) {
   let (synchronous_action, ongoing_action) = match action.clone() {
     None => (None, None),
-    Some (action) => match action.practicalities (accessor, object).time_costs {
+    Some (action) => match action_practicalities (accessor, object, & action).time_costs {
       None => (Some(make_synchronous_action(accessor, Action::Think (Think), (STANDARD_ACTION_SECOND*6/10, 0, 20))), Some (action)),
       Some (costs) => (Some(make_synchronous_action(accessor, action, costs)), None),
     }
@@ -570,7 +583,7 @@ impl ActionTrait for Build {
     let varying = query (accessor, &object.varying) ;
     let stats = default_stats(accessor,self.building_type.clone());
     let reserved = reserved_food (accessor, object);
-    let priority = if varying.food < stats.food_cost + reserved {
+    let value = if varying.food < stats.food_cost + reserved {
       -1000
     }
     else if varying.object_type == ObjectType::Palace {
@@ -584,7 +597,7 @@ impl ActionTrait for Build {
         (varying.is_unit || varying.is_building)
         && (self.building_type == ObjectType::Guild || self.building_type == ObjectType::Palace)
       ),
-      priority: priority,
+      value: value,
       time_costs: Some ((1*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
     }
@@ -648,14 +661,14 @@ impl ActionTrait for Recruit {
     let varying = query_ref (accessor, &object.varying);
     let stats = default_stats(accessor,self.recruit_type.clone());
     let reserved = reserved_food (accessor, object);
-    let priority = if varying.food < stats.food_cost + reserved {
+    let value = if varying.food < stats.food_cost + reserved {
       -1000
     }
     else {
       1000
     };
     ActionPracticalities {
-      priority: priority,
+      value: value,
       indefinitely_impossible: !(can_add_recruit (accessor, & varying, & stats) && varying.food >= stats.food_cost),
       time_costs: Some ((10*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
@@ -707,7 +720,7 @@ impl ActionTrait for Shoot {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: 100*if is_enemy (accessor, object, & self.target) {1} else {-1},
+      value: 100*if is_enemy (accessor, object, & self.target) {1} else {-1},
       indefinitely_impossible: !(varying.is_unit && varying.object_type != ObjectType::Peasant && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
@@ -741,7 +754,7 @@ impl ActionTrait for Disappear {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
     ActionPracticalities {
-      priority: COMBAT_PRIORITY + 1000,
+      value: COMBAT_PRIORITY + 1000,
       indefinitely_impossible: varying.object_type != ObjectType::Arrow,
       time_costs: Some ((self.time*STANDARD_ACTION_SPEED, 0, 0)),
       .. Default::default()
@@ -775,8 +788,8 @@ impl ActionTrait for Pursue {
         result.indefinitely_impossible = true;
       } else {
         let time_to_reach = (excessive_distance + varying.speed - 1)/varying.speed;
-        let time_to_perform = max(result.time_costs.unwrap().0, result.time_costs.unwrap().1)/STANDARD_ACTION_SPEED;
-        result.priority = result.priority*time_to_perform/(time_to_perform + time_to_reach);
+        let time_to_perform = result.expected_time_taken;
+        result.expected_time_taken = time_to_perform + time_to_reach;
       }
     }
     else {
@@ -816,7 +829,7 @@ impl ActionTrait for Collect {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      priority: self.reward(accessor, object),
+      value: self.reward(accessor, object),
       indefinitely_impossible: !(
         (varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0)
         || (varying.is_unit && target_varying.object_type == ObjectType::Fruit)
@@ -864,7 +877,7 @@ impl ActionTrait for ExchangeResources {
     let transfer = self.transfer_amount (accessor, object);
     let desire = if transfer > 0 {transfer*100} else {-transfer};
     ActionPracticalities {
-      priority: desire,
+      value: desire,
       indefinitely_impossible: !(varying.object_type == ObjectType::Peasant && (target_varying.object_type == ObjectType::Palace || target_varying.object_type == ObjectType::Guild)),
       impossible_outside_range: Some ((self.target.clone(), STRIDE/2)),
       time_costs: Some ((STANDARD_ACTION_SECOND*5, 0, 10)),
@@ -913,7 +926,7 @@ impl ActionTrait for Rest {
     if let Some(home) = varying.home.as_ref() {
       if !is_destroyed (accessor, home) {
         return ActionPracticalities {
-          priority: varying.max_endurance/3 - varying.endurance.evaluate (*accessor.now()),
+          value: varying.max_endurance/3 - varying.endurance.evaluate (*accessor.now()),
           indefinitely_impossible: !varying.is_unit,
           impossible_outside_range: Some ((home.clone(), STRIDE)),
           time_costs: Some ((STANDARD_ACTION_SECOND*20, 0, 5)),
