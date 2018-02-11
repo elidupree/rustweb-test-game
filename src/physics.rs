@@ -778,7 +778,7 @@ impl ActionTrait for Pursue {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     //let target_varying = query_ref (accessor, & self.target.varying);
-    let mut result = self.intention.practicalities(accessor, object);
+    let mut result = action_practicalities(accessor, object, &self.intention);
     if let Some(limit) = result.impossible_outside_range.take() {
       let location = varying.trajectory.evaluate (*accessor.now());
       let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
