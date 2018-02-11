@@ -550,7 +550,7 @@ pub fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   let (synchronous_action, ongoing_action) = match action.clone() {
     None => (None, None),
     Some (action) => match action_practicalities (accessor, object, & action).time_costs {
-      None => (Some(make_synchronous_action(accessor, Action::Think (Think), (STANDARD_ACTION_SECOND*6/10, 0, 20))), Some (action)),
+      None => (Some(make_synchronous_action(accessor, Action::Think (Think), (STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*6/10, 20))), Some (action)),
       Some (costs) => (Some(make_synchronous_action(accessor, action, costs)), None),
     }
   };
