@@ -857,6 +857,8 @@ impl ExchangeResources {
     let mut transfer;
     if target_varying.object_type == ObjectType::Palace && target_varying.hitpoints > 0 {
       transfer = varying.food - RANGER_COST*4;
+      // don't check target reserved food directly – the peasant is explicitly permitted to take food reserved for other buildings - but don't take away the last ability to pay upkeep to a peasant, either
+      transfer = max (-max(0, target_varying.food - STANDARD_FOOD_UPKEEP_PER_DAY), transfer);
     }
     else if target_varying.hitpoints == 0 {
       transfer = target_varying.food_cost - target_varying.food;
