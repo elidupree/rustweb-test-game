@@ -443,8 +443,7 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
     if let Some(limit) = practicalities.impossible_outside_range.clone() {
       let location = varying.trajectory.evaluate (*accessor.now());
       let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
-      let target_distance = distance (location, target_location).max();
-      if target_distance > limit.1 {
+      if !distance_less_than (location, target_location, limit.1) {
         possible = false;
       }
       consider_impl (accessor, object, choices, Action::Pursue (Pursue {target: limit.0, intention: Box::new (action.clone())}));
@@ -512,8 +511,7 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
       assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
       let other_varying = query_ref (accessor, & other.varying);
       let other_position = other_varying.trajectory.evaluate (*accessor.now());
-      let other_distance = distance (position, other_position).max() - radius (& other_varying);
-      if other_distance > varying.interrupt_range {
+      if !distance_less_than (position, other_position, varying.interrupt_range + radius (& other_varying)) {
         for choice in interaction_choices (accessor, object, &other) {
           consider (&mut choices, choice);
         }
@@ -616,7 +614,7 @@ impl ActionTrait for Build {
           
           let target_position = position + random_vector_exact_length (&mut generator, attempt_distance);
           
-          if distance (target_position, Vector::new (0, 0)).max() >INITIAL_PALACE_DISTANCE*10/9 {continue;}
+          if !magnitude_less_than (target_position, INITIAL_PALACE_DISTANCE*10/9) {continue;}
           
           // TODO: don't respect unbuilt enemy buildings
           
@@ -782,11 +780,11 @@ impl ActionTrait for Pursue {
     if let Some(limit) = result.impossible_outside_range.take() {
       let location = varying.trajectory.evaluate (*accessor.now());
       let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
-      let target_distance = distance (location, target_location).max();
-      let excessive_distance = target_distance - limit.1;
-      if excessive_distance <= 0 || varying.speed <= 0 || *object == limit.0 {
+      if distance_less_than (location, target_location, limit.1) || varying.speed <= 0 || *object == limit.0 {
         result.indefinitely_impossible = true;
       } else {
+        let target_distance = octagonal_distance (location, target_location);
+        let excessive_distance = max (0, target_distance - limit.1);
         let time_to_reach = (excessive_distance + varying.speed - 1)/varying.speed;
         let time_to_perform = result.expected_time_taken;
         result.expected_time_taken = time_to_perform + time_to_reach;

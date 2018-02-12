@@ -201,8 +201,7 @@ pub fn objects_touching_circle <A: Accessor <Steward = Steward>>(accessor: &A, c
   Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (center), circle_radius as u64), None).into_iter().filter(| object | {
     let varying = query_ref (accessor, &object.varying) ;
     let position = varying.trajectory.evaluate (*accessor.now());
-    let center_distance = distance (center, position).max();
-    center_distance <= circle_radius + radius (& varying)
+    distance_less_than (center, position, circle_radius + radius (& varying))
   }).collect()
 }
 

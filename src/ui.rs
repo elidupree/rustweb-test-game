@@ -255,7 +255,7 @@ pub fn run() {
         let varying = query_ref (& snapshot, & object.varying);
         let center = varying.trajectory.evaluate (now);
         let object_radius = radius (& varying);
-        if distance (location, center).max() < object_radius {
+        if distance (location, center) < object_radius {
           game.selected_object = Some (object.clone());
         }
       }

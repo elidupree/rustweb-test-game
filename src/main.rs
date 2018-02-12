@@ -11,6 +11,7 @@ extern crate nalgebra;
 extern crate array_ext;
 extern crate rand;
 extern crate boolinator;
+extern crate integer_sqrt;
 
 extern crate time_steward;
 

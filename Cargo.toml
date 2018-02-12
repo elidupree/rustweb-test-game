@@ -14,3 +14,4 @@ time_steward = {git = "https://github.com/elidupree/time-steward"}
 rand = "0.3"
 boolinator = "2.4"
 derivative = "1.0"
+integer-sqrt = "0.1.0"

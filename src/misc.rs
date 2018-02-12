@@ -12,6 +12,7 @@ use std::ops::{Add, AddAssign, Mul};
 
 use array_ext::*;
 use rand::Rng;
+use integer_sqrt::IntegerSquareRoot;
 
 
 use time_steward::{QueryResult};
@@ -62,23 +63,60 @@ pub fn modify<A: EventAccessor <Steward = Steward>, T: QueryResult, F: FnOnce(&m
 }
 
 
+pub fn magnitude (vector: Vector)->Coordinate {
+  let vector = Vector::new (vector[0].abs(), vector[1].abs());
+  let mut shift = 0;
+  loop {
+    let reduced = Vector::new (vector[0] >> shift, vector[1] >> shift);
+    if reduced[0] < (1i64 << 31) && reduced[1] < (1i64 << 31) {
+      return (reduced[0]*reduced[0] + reduced[1]*reduced[1]).integer_sqrt() << shift
+    }
+    shift += 16;
+  }
+  //distance_squared (first, second).sqrt().unwrap()
+}
+pub fn magnitude_less_than (vector: Vector, threshold: Coordinate)->bool {
+  let vector = Vector::new (vector[0].abs(), vector[1].abs());
+  if vector [0] >= threshold || vector [1] >= threshold {return false}
+  if vector [0] + vector [1] < threshold {return true}
+  let mut shift = 0;
+  loop {
+    let reduced = Vector::new (vector[0] >> shift, vector[1] >> shift);
+    let reduced_threshold = threshold >> shift;
+    if reduced[0] < (1i64 << 31) && reduced[1] < (1i64 << 31) && reduced_threshold < (1i64 << 31) {
+      return (reduced[0]*reduced[0] + reduced[1]*reduced[1]) < reduced_threshold*reduced_threshold
+    }
+    shift += 16;
+  }
+}
+pub fn octagonal_magnitude (vector: Vector)->Coordinate {
+  let vector = Vector::new (vector[0].abs(), vector[1].abs());
+  let (bigger, smaller) = if vector [0] > vector [1] {(vector [0], vector [1])} else {(vector [1], vector [0])};
+  (bigger*1007 + smaller*441 + 512)/1024
+}
 pub fn distance_squared (first: Vector, second: Vector)->Range {
   Range::exactly (second [0] - first [0])*Range::exactly (second [0] - first [0])
   + Range::exactly (second [1] - first [1])*Range::exactly (second [1] - first [1])
 }
-pub fn distance (first: Vector, second: Vector)->Range {
-  distance_squared (first, second).sqrt().unwrap()
+pub fn distance (first: Vector, second: Vector)->Coordinate {
+  magnitude (second - first)
+}
+pub fn distance_less_than (first: Vector, second: Vector, threshold: Coordinate)->bool {
+  magnitude_less_than (second - first, threshold)
+}
+pub fn octagonal_distance (first: Vector, second: Vector)->Coordinate {
+  octagonal_magnitude (second - first)
 }
 pub fn normalized_to (mut vector: Vector, length: Coordinate)->Vector {
   while vector [0].abs() > (1<<10) || vector [1].abs() > (1<<10) { vector /= 2; }
-  vector*length*100/(distance (vector*100, Vector::new (0, 0)).max())
+  vector*length*100/magnitude (vector*100)
 }
 pub fn random_vector_exact_length <G: Rng> (generator: &mut G, length: Coordinate)->Vector {
   loop {
     let vector = Vector::new (
       generator.gen_range (- length, length+1),
       generator.gen_range (- length, length+1),);
-    let test_length = distance(vector, Vector::new (0, 0)).max();
+    let test_length = magnitude (vector);
     if test_length <= length && test_length*2 >= length {
       return normalized_to (vector, length);
     }
@@ -89,7 +127,7 @@ pub fn random_vector_within_length <G: Rng> (generator: &mut G, length: Coordina
     let vector = Vector::new (
       generator.gen_range (- length, length+1),
       generator.gen_range (- length, length+1),);
-    let test_length = distance(vector, Vector::new (0, 0)).max();
+    let test_length = magnitude (vector);
     if test_length <= length {
       return vector;
     }
