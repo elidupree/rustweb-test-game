@@ -106,7 +106,7 @@ define_action_types! {
   Collect,
   Wait,
   ExchangeResources,
-  
+  Wander,
 }
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
@@ -128,6 +128,8 @@ pub struct Rest;
 pub struct Wait;
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Disappear {pub time: Time,}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct Wander {pub target_location: Vector,}
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -460,7 +462,6 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
     consider (&mut choices, current.clone());
   }
 
-  consider (&mut choices, Action::Wait(Wait));  
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Guild}));
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Palace}));
   consider (&mut choices, Action::Recruit(Recruit { recruit_type: ObjectType::Ranger }));
@@ -518,6 +519,12 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
       }
     }
   }
+  
+  consider (&mut choices, Action::Wait(Wait));
+  consider (&mut choices, Action::Wander (Wander {
+    // note: we don't use random stuff in most of this function, because we want it to generally give the same result even if the unit got interrupted in between. But wandering in a different direction after getting interrupted is probably fine.
+    target_location: position + random_vector_within_length (&mut DeterministicRandomId::new (& (accessor.extended_now().id, 0x0389951cfde0be44u64)).to_rng(), varying.speed*10*SECOND),
+  })); 
   
   choices.sort_by_key (| choice | -choice.priority);
   choices
@@ -770,7 +777,6 @@ impl ActionTrait for Disappear {
 
 
 
-// TODO: can't "pursue in order to X" if you are already in range to X
 impl ActionTrait for Pursue {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
@@ -920,6 +926,24 @@ impl ActionTrait for ExchangeResources {
 
 
 
+impl ActionTrait for Wander {
+  fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
+    let varying = query_ref (accessor, &object.varying);
+    let location = varying.trajectory.evaluate (*accessor.now());
+    ActionPracticalities {
+      value: 1,
+      indefinitely_impossible: varying.speed == 0 || distance_less_than (location, self.target_location, TRIVIAL_DISTANCE*2),
+      .. Default::default()
+    }
+  }
+  fn target_location <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->Option<Vector> {
+    Some (self.target_location)
+  }
+}
+
+
+
+
 impl ActionTrait for Rest {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
@@ -959,6 +983,8 @@ impl ActionTrait for Rest {
     }
   }
 }
+
+
 
 
 
