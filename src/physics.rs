@@ -50,6 +50,7 @@ pub const PALACE_COST: Amount = STANDARD_UNIT_COST*30;
 pub const BEAST_COST: Amount = STANDARD_UNIT_COST;
 pub const BEAST_REWARD: Amount = STANDARD_UNIT_COST/2;
 
+pub const BREAK_EVEN_PRIORITY: Amount = 100;
 pub const COMBAT_PRIORITY: Amount = 1<<40;
 
 
@@ -447,7 +448,7 @@ pub fn action_practicalities <A: Accessor <Steward = Steward>>(accessor: &A, obj
   let mut result = action.practicalities (accessor, object) ;
   if let Some(time_costs) = result.time_costs.as_mut() {
     time_costs.1 = max(time_costs.0, time_costs.1);
-    result.expected_time_taken = time_costs.1/STANDARD_ACTION_SPEED;
+    if result.expected_time_taken == 0 {result.expected_time_taken = time_costs.1/STANDARD_ACTION_SPEED;}
   }
   result
 }
@@ -480,9 +481,9 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
   };
   
   // first pass: cheapest calculations.
-  if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
+  /*if let Some(current) = varying.ongoing_action.as_ref().or (varying.synchronous_action.as_ref().map (| action | &action.action_type)) {
     consider (&mut choices, current.clone());
-  }
+  }*/
 
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Guild}));
   consider (&mut choices, Action::Build(Build {building_type: ObjectType::Palace}));
@@ -520,13 +521,6 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
   }
   
   if !full_scan {
-    choices.sort_by_key (| choice | -choice.priority);
-    if let Some(&AnalyzedChoice {priority, ..}) = choices.first() {
-      if priority > 0{
-        return choices
-      }
-    }
-  
     consider (&mut choices, Action::Scan (Scan));
     choices.sort_by_key (| choice | -choice.priority);
     return choices
@@ -707,6 +701,8 @@ impl ActionTrait for Build {
         && (self.building_type == ObjectType::Guild || self.building_type == ObjectType::Palace)
       ),
       value: value,
+      // hack to set priority
+      expected_time_taken: SECOND,
       time_costs: Some ((1*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
     }
@@ -778,6 +774,8 @@ impl ActionTrait for Recruit {
     };
     ActionPracticalities {
       value: value,
+      // hack to set priority
+      expected_time_taken: SECOND,
       indefinitely_impossible: !(can_add_recruit (accessor, & varying, & stats) && varying.food >= stats.food_cost),
       time_costs: Some ((10*STANDARD_ACTION_SECOND, 0, 5)),
       .. Default::default()
@@ -825,7 +823,9 @@ impl ActionTrait for Scan {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->ActionPracticalities {
     ActionPracticalities {
       time_costs: Some ((STANDARD_ACTION_SECOND*12/10, 0, 20)),
-      value: 1,
+      value: BREAK_EVEN_PRIORITY,
+      // hack to set priority
+      expected_time_taken: SECOND,
       .. Default::default()
     }
   }
@@ -948,7 +948,7 @@ impl ActionTrait for Collect {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      value: self.reward(accessor, object),
+      value: BREAK_EVEN_PRIORITY*self.reward(accessor, object)/STANDARD_FOOD_UPKEEP_PER_SECOND,
       indefinitely_impossible: !(
         (varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0)
         || (varying.is_unit && target_varying.object_type == ObjectType::Fruit)
@@ -996,7 +996,11 @@ impl ActionTrait for ExchangeResources {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     let transfer = self.transfer_amount (accessor, object);
-    let desire = if transfer > 0 {transfer*100} else {-transfer};
+    let desire = if transfer > 0 {
+      BREAK_EVEN_PRIORITY*(transfer)/STANDARD_FOOD_UPKEEP_PER_SECOND
+    } else {
+      BREAK_EVEN_PRIORITY*(-transfer)/(STANDARD_FOOD_UPKEEP_PER_SECOND*10)
+    };
     ActionPracticalities {
       value: desire,
       indefinitely_impossible: !(varying.object_type == ObjectType::Peasant && (target_varying.object_type == ObjectType::Palace || target_varying.object_type == ObjectType::Guild)),
@@ -1045,9 +1049,11 @@ impl ActionTrait for Wander {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
     let location = varying.trajectory.evaluate (*accessor.now());
+    let target_distance = octagonal_distance (location,self.target_location);
     ActionPracticalities {
       value: 1,
       indefinitely_impossible: varying.speed == 0 || distance_less_than (location, self.target_location, TRIVIAL_DISTANCE*2),
+      expected_time_taken: if varying.speed != 0 { target_distance/varying.speed } else { 0 },
       .. Default::default()
     }
   }
@@ -1064,8 +1070,9 @@ impl ActionTrait for Rest {
     let varying = query_ref (accessor, &object.varying);
     if let Some(home) = varying.home.as_ref() {
       if !is_destroyed (accessor, home) {
+        let endurance_lost_percent = 100*(varying.max_endurance - varying.endurance.evaluate (*accessor.now()))/varying.max_endurance;
         return ActionPracticalities {
-          value: varying.max_endurance/3 - varying.endurance.evaluate (*accessor.now()),
+          value: (Range::exactly(BREAK_EVEN_PRIORITY*20)*endurance_lost_percent*endurance_lost_percent*endurance_lost_percent/Range::exactly(30*30*30)).max(),
           indefinitely_impossible: !varying.is_unit,
           impossible_outside_range: Some ((home.clone(), STRIDE)),
           time_costs: Some ((STANDARD_ACTION_SECOND*20, 0, 5)),
