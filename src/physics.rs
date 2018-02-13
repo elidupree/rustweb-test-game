@@ -53,6 +53,8 @@ pub const BEAST_REWARD: Amount = STANDARD_UNIT_COST/2;
 pub const BREAK_EVEN_PRIORITY: Amount = 100;
 pub const COMBAT_PRIORITY: Amount = 1<<40;
 
+pub const THINK_DURATION: Time = SECOND*6/10;
+
 
 // ##########################################
 // ######       data definitions      #######
@@ -634,7 +636,10 @@ pub fn fast_update_ongoing_action <A: EventAccessor <Steward = Steward>>(accesso
         if let Some(target) = current.target_location (accessor, object) {
           let position = varying.trajectory.evaluate (*accessor.now());
           let velocity = normalized_to (target - position, varying.speed);
-          if !distance_less_than (varying.trajectory.velocity, velocity, varying.speed/32) {
+          //update the velocity if it's too far different from the ideal;
+          //also update the velocity if we are very close to the target, to prevent slight misses
+          if !distance_less_than (varying.trajectory.velocity, velocity, varying.speed/32)
+            || distance_less_than (target, position, varying.speed*THINK_DURATION*3/2) {
             return UpdateType::UpdateVelocity (velocity);
           }
         }
@@ -805,7 +810,7 @@ impl ActionTrait for Recruit {
 impl ActionTrait for Think {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->ActionPracticalities {
     ActionPracticalities {
-      time_costs: Some ((STANDARD_ACTION_SECOND*6/10, 0, 20)),
+      time_costs: Some ((STANDARD_ACTION_SPEED*THINK_DURATION, 0, 20)),
       .. Default::default()
     }
   }
