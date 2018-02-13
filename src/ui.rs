@@ -139,7 +139,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
         js! {selected_info.append ($("<div>").text(@{format!("{:?}", choice)}));}
       }
     }
-    js! {selected_info.append ($("<div>").text(@{format!("{:?}", **selected)}));}
+    //js! {selected_info.append ($("<div>").text(@{format!("{:?}", **selected)}));}
   }
   js! {
     context.restore();
