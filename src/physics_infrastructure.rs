@@ -134,7 +134,7 @@ pub fn create_object_impl <A: EventAccessor <Steward = Steward>>(accessor: &A, s
   let created = accessor.new_handle (Object {id: id, varying: new_timeline()});
   set (accessor, & created.varying, varying);
   Detector::insert (accessor, & get_detector (accessor), & created, source_object);
-  reconsider_action (accessor, & created) ;
+  reconsider_action (accessor, & created, false) ;
   //object_changed (accessor, & created);
   created
 }

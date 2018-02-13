@@ -133,9 +133,11 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
         }
       })
     );}
-    let choices = analyzed_choices (accessor, & selected);
-    for choice in choices {
-      js! {selected_info.append ($("<div>").text(@{format!("{:?}", choice)}));}
+    //let choices = analyzed_choices (accessor, & selected);
+    if let Some(choices) = varying.last_choices.as_ref() {
+      for choice in choices.iter() {
+        js! {selected_info.append ($("<div>").text(@{format!("{:?}", choice)}));}
+      }
     }
     js! {selected_info.append ($("<div>").text(@{format!("{:?}", **selected)}));}
   }

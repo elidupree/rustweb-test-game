@@ -5,7 +5,7 @@ authors = ["Eli Dupree <vcs@elidupree.com>"]
 
 [dependencies]
 stdweb = "0.3"
-serde = "1"
+serde = {version = "1", features = ["rc"]}
 serde_derive = "1"
 nalgebra = {version = "0.13", features = ["serde-serialize"]}
 array_ext = "0.2"

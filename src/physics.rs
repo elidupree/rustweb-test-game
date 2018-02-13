@@ -4,6 +4,7 @@ use nalgebra::{Vector2};
 use rand::Rng;
 //use boolinator::Boolinator;
 use std::cmp::{min, max};
+use std::sync::Arc;
 
 
 use time_steward::{DeterministicRandomId};
@@ -93,6 +94,18 @@ impl ActionPracticalities {
     indefinitely_impossible: true,
     .. Default::default()
   }}
+  pub fn possible <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->bool {
+    if self.indefinitely_impossible {return false}
+    let varying = query_ref (accessor, &object.varying) ;
+    let position = varying.trajectory.evaluate (*accessor.now());
+    if let Some(limit) = self.impossible_outside_range.clone() {
+      let target_location = query_ref (accessor, & limit.0.varying).trajectory.evaluate (*accessor.now());
+      if !distance_less_than (position, target_location, limit.1) {
+        return false
+      }
+    }
+    true
+  }
 }
 
 define_action_types! {
@@ -107,6 +120,7 @@ define_action_types! {
   Wait,
   ExchangeResources,
   Wander,
+  Scan,
 }
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Shoot {pub target: ObjectHandle,}
@@ -130,6 +144,8 @@ pub struct Wait;
 pub struct Disappear {pub time: Time,}
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct Wander {pub target_location: Vector,}
+#[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct Scan;
 
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -200,6 +216,8 @@ pub struct ObjectVarying {
   
   pub prediction: Option <EventHandle>,
   pub detector_data: Option <DetectorData>,
+  
+  pub last_choices: Option <Arc< Vec<AnalyzedChoice>>>,
 }
 
 #[derive (Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -219,7 +237,11 @@ pub fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &Obj
 }
 
 pub fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
-  query_ref (accessor, & object.varying).team != query_ref (accessor, & other.varying).team
+  let varying = query_ref (accessor, & object.varying);
+  let other_varying = query_ref (accessor, & other.varying)
+  ((varying.is_unit && varying.hitpoints >0) || varying.is_building) &&
+  ((other_varying.is_unit && other_varying.hitpoints >0) || other_varying.is_building) &&
+  varying.team != other_varying.team
 }
 
 pub fn radius (varying: & ObjectVarying)->Coordinate {
@@ -430,7 +452,7 @@ pub fn action_practicalities <A: Accessor <Steward = Steward>>(accessor: &A, obj
   result
 }
 
-pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Vec<AnalyzedChoice> {
+pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, full_scan: bool)->Vec<AnalyzedChoice> {
   let varying = query_ref (accessor, &object.varying) ;
   let position = varying.trajectory.evaluate (*accessor.now());
   let mut choices: Vec<AnalyzedChoice> = Vec::new();
@@ -496,12 +518,18 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
       }
     }}
   }
-    
-  choices.sort_by_key (| choice | -choice.priority);
-  if let Some(&AnalyzedChoice {priority, ..}) = choices.first() {
-    if priority > 0{
-      return choices
+  
+  if !full_scan {
+    choices.sort_by_key (| choice | -choice.priority);
+    if let Some(&AnalyzedChoice {priority, ..}) = choices.first() {
+      if priority > 0{
+        return choices
+      }
     }
+  
+    consider (&mut choices, Action::Scan (Scan));
+    choices.sort_by_key (| choice | -choice.priority);
+    return choices
   }
   
   // third pass: there's nothing to do nearby, so it's finally worth it to pay the larger cost of searching for a distant task
@@ -528,14 +556,6 @@ pub fn analyzed_choices <A: Accessor <Steward = Steward>>(accessor: &A, object: 
   
   choices.sort_by_key (| choice | -choice.priority);
   choices
-}
-
-fn choose_action <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle)->Action {
-  let choices = analyzed_choices (accessor, object);
-  let result = choices.first().unwrap();
-  //printlnerr!("{:?}", choices);
-  assert!(result.priority >= 0);
-  result.action.clone()
 }
 
 
@@ -576,9 +596,93 @@ pub fn set_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &
   });
 }
 
-pub fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
-  if !is_destroyed (accessor, object) && query_ref (accessor, &object.varying).hitpoints > 0 {
-    set_action (accessor, object, Some (choose_action (accessor, object))) ;
+pub fn reconsider_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, full_scan: bool) {
+  if !is_destroyed (accessor, object) && {query_ref (accessor, &object.varying).hitpoints > 0} {
+    let choices = analyzed_choices (accessor, object, full_scan);
+    let best_action = {
+      let result = choices.first().unwrap();
+      //printlnerr!("{:?}", choices);
+      assert!(result.priority >= 0);
+      result.action.clone()
+    };
+    modify_object (accessor, & object, move | varying | {
+      varying.last_choices = Some (Arc::new (choices));
+    });
+    set_action (accessor, object, Some (best_action));
+  }
+}
+
+
+
+pub fn fast_update_ongoing_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  enum UpdateType {
+    None,
+    Reconsider,
+    UpdateVelocity (Vector),
+  }
+  let update_type = (|| {
+    let varying = query_ref (accessor, &object.varying) ;
+    let position = varying.trajectory.evaluate (*accessor.now());
+    if let Some(current) = varying.ongoing_action.as_ref() {
+      let practicalities = action_practicalities (accessor, object, & current);
+      if practicalities.value <= 0 || !practicalities.possible (accessor, object) {
+        return UpdateType::Reconsider;
+      }
+      else {
+        let nearby = objects_touching_circle (accessor, position, varying.interrupt_range);
+        for other in nearby {
+          assert! (!is_destroyed (accessor, & other), "destroyed objects shouldn't be in the collision detection") ;
+          if is_enemy (accessor, object, & other) {
+            return UpdateType::Reconsider;
+          }
+        }
+        
+        if let Some(target) = current.target_location (accessor, object) {
+          let position = varying.trajectory.evaluate (*accessor.now());
+          let velocity = normalized_to (target - position, varying.speed);
+          if !distance_less_than (varying.trajectory.velocity, velocity, varying.speed/32) {
+            return UpdateType::UpdateVelocity (velocity);
+          }
+        }
+      }
+      return UpdateType::None
+    }
+    panic!("fast_update_ongoing_action() when there's no ongoing action")
+  })();
+  
+  match update_type {
+    UpdateType::None => modify_object (accessor, & object, | varying | {
+      varying.synchronous_action = Some(make_synchronous_action (accessor, Action::Think (Think), action_practicalities (accessor, object, & Action::Think (Think)).time_costs.unwrap()));
+    }),
+    UpdateType::Reconsider => reconsider_action (accessor, object, false),
+    UpdateType::UpdateVelocity (velocity) => modify_object (accessor, & object, | varying | {
+      varying.trajectory.set_velocity (*accessor.now(), velocity);
+      varying.synchronous_action = Some(make_synchronous_action (accessor, Action::Think (Think), action_practicalities (accessor, object, & Action::Think (Think)).time_costs.unwrap()));
+    }),
+  }
+}
+
+fn finish_action <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+  enum UpdateType {
+    Fast,
+    Reconsider(bool),
+  }
+  let update_type = (|| {
+    let varying = query_ref (accessor, &object.varying);
+    if varying.ongoing_action.is_some() {
+      UpdateType::Fast
+    }
+    else {
+      UpdateType::Reconsider(match varying.synchronous_action {
+        Some (SynchronousAction {action_type: Action::Scan (Scan), ..}) => true,
+        _ => false,
+      })
+    }
+  })();
+  
+  match update_type {
+    UpdateType::Fast => fast_update_ongoing_action (accessor, object),
+    UpdateType::Reconsider (full_scan) => reconsider_action (accessor, object, full_scan),
   }
 }
 
@@ -715,6 +819,17 @@ impl ActionTrait for Think {
     let varying = query_ref (accessor, &object.varying) ;
     varying.ongoing_action.as_ref().expect ("there should be an ongoing action if you are thinking").target_location(accessor, object)
   }
+}
+
+impl ActionTrait for Scan {
+  fn practicalities <A: Accessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle)->ActionPracticalities {
+    ActionPracticalities {
+      time_costs: Some ((STANDARD_ACTION_SECOND*12/10, 0, 20)),
+      value: 1,
+      .. Default::default()
+    }
+  }
+  fn achieve <A: EventAccessor <Steward = Steward>> (&self, _accessor: &A, _object: &ObjectHandle) {}
 }
 
 
@@ -918,7 +1033,7 @@ impl ActionTrait for ExchangeResources {
             varying.dependents.retain (|a| *a != self.target);
           });
         }}
-        reconsider_action (accessor, & self.target);
+        reconsider_action (accessor, & self.target, false);
       }
     }
   }
@@ -1030,7 +1145,7 @@ define_event! {
       varying.synchronous_action.as_mut().unwrap().achieved = true;
     });
     if action.progress.evaluate (*accessor.now()) >= action.finish_cost {
-      reconsider_action (accessor, & self.object);
+      finish_action (accessor, & self.object);
     }
   }
 }
@@ -1039,7 +1154,7 @@ define_event! {
   pub struct FinishAction {pub object: ObjectHandle},
   PersistentTypeId(0x0242d450549f9245),
   fn execute (&self, accessor: &mut Accessor) {
-    reconsider_action (accessor, &self.object);
+    finish_action (accessor, &self.object);
   }
 }
 
@@ -1048,7 +1163,7 @@ define_event! {
   PersistentTypeId(0x26058edd2a3247aa),
   fn execute (&self, accessor: &mut Accessor) {
     //printlnerr!("{:?}", query (accessor, & self.object.varying));
-    reconsider_action (accessor, &self.object);
+    reconsider_action (accessor, &self.object, false);
   }
 }
 
