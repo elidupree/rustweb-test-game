@@ -49,7 +49,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
   let canvas_width: f64 = js! {return canvas.width;}.try_into().unwrap();
   let scale = canvas_width/(game.display_radius as f64*2.0);
   js! {
-    var size = Math.min (window.innerHeight, window.innerWidth, 600);
+    var size = Math.min (window.innerHeight, window.innerWidth);
     canvas.setAttribute ("width", size);
     canvas.setAttribute ("height", size);
     context.clearRect (0, 0, canvas.width, canvas.height);
