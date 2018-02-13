@@ -238,7 +238,7 @@ pub fn is_destroyed <A: Accessor <Steward = Steward>>(accessor: &A, object: &Obj
 
 pub fn is_enemy <A: Accessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle, other: & ObjectHandle)->bool {
   let varying = query_ref (accessor, & object.varying);
-  let other_varying = query_ref (accessor, & other.varying)
+  let other_varying = query_ref (accessor, & other.varying);
   ((varying.is_unit && varying.hitpoints >0) || varying.is_building) &&
   ((other_varying.is_unit && other_varying.hitpoints >0) || other_varying.is_building) &&
   varying.team != other_varying.team
