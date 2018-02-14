@@ -1135,7 +1135,7 @@ define_event! {
         },
       );
     }
-    for index in 0..28 {
+    for index in 0..88 {
       create_object_impl (accessor, None, DeterministicRandomId::new (& (index, 0xb2e085cd02f2f8dbu64)),
         ObjectVarying {
           team: 6,
