@@ -1054,11 +1054,13 @@ impl ActionTrait for Wander {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
     let location = varying.trajectory.evaluate (*accessor.now());
-    let target_distance = octagonal_distance (location,self.target_location);
+    //let target_distance = octagonal_distance (location,self.target_location);
     ActionPracticalities {
-      value: 1,
+      value: BREAK_EVEN_PRIORITY/2,
+      // hack to set priority
+      expected_time_taken: SECOND,
       indefinitely_impossible: varying.speed == 0 || distance_less_than (location, self.target_location, TRIVIAL_DISTANCE*2),
-      expected_time_taken: if varying.speed != 0 { target_distance/varying.speed } else { 0 },
+      //expected_time_taken: if varying.speed != 0 { target_distance/varying.speed } else { 0 },
       .. Default::default()
     }
   }
