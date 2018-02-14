@@ -2,7 +2,7 @@ use super::*;
 
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::cmp::max;
+use std::cmp::{min, max};
 
 use stdweb::web;
 use stdweb::unstable::TryInto;
@@ -59,7 +59,7 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
     
     context.translate (@{game.display_radius as f64}, @{game.display_radius as f64});
   }
-  for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (Vector::new (0, 0)), INITIAL_PALACE_DISTANCE as u64*2), None) {
+  for object in Detector::objects_near_box (accessor, & get_detector (accessor), BoundingBox::centered (to_collision_vector (if game.display_radius > INITIAL_PALACE_DISTANCE*2 { Vector::new(0,0) } else { game.display_center }), min (game.display_radius, INITIAL_PALACE_DISTANCE*2) as u64), None) {
     let varying = query_ref (accessor, & object.varying);
     let center = varying.trajectory.evaluate (*accessor.now());
     let center = Vector2::new (center [0] as f64, center [1] as f64);
