@@ -952,8 +952,9 @@ impl ActionTrait for Collect {
     if is_destroyed (accessor, & self.target) {return ActionPracticalities::target_destroyed();}
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
+    let priority_bias = DeterministicRandomId::new (& (object.id, self.target.id, 0x88d2f95b1aeacad4u64)).to_rng().gen_range (100,150);
     ActionPracticalities {
-      value: BREAK_EVEN_PRIORITY*self.reward(accessor, object)/STANDARD_FOOD_UPKEEP_PER_SECOND,
+      value: (BREAK_EVEN_PRIORITY*self.reward(accessor, object)/STANDARD_FOOD_UPKEEP_PER_SECOND)*priority_bias/100,
       indefinitely_impossible: !(
         (varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0)
         || (varying.object_type == ObjectType::Beast && target_varying.object_type == ObjectType::Fruit)

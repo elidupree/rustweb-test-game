@@ -89,13 +89,13 @@ pub fn draw_game <A: Accessor <Steward = Steward>>(accessor: &A, game: & Game) {
       context.lineWidth = @{0.3/scale};
       context.stroke();
     }}
-    if varying.interrupt_range >0 {js! {
+    if varying.interrupt_range >0 && varying.object_type != ObjectType::Beast {js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{varying.interrupt_range as f64}, 0, Math.PI*2);
       context.lineWidth = @{0.3/scale};
       context.stroke();
     }}
-    if varying.awareness_range >0 {js! {
+    if varying.awareness_range >0 && varying.object_type != ObjectType::Beast {js! {
       context.beginPath();
       context.arc (@{center [0]},@{center [1]},@{varying.awareness_range as f64}, 0, Math.PI*2);
       context.lineWidth = @{0.3/scale};
