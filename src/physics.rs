@@ -1091,7 +1091,6 @@ impl ActionTrait for Rest {
     if let Some(home) = varying.home.as_ref() {
       if !is_destroyed (accessor, home) {
         let (_remaining_food, restored_endurance) = self.effect_amounts (accessor, object);
-        let current_endurance = varying.endurance.evaluate (*accessor.now());
         let endurance_restored_percent = 100*restored_endurance/varying.max_endurance;
         return ActionPracticalities {
           value: (Range::exactly(BREAK_EVEN_PRIORITY*20)*endurance_restored_percent*endurance_restored_percent*endurance_restored_percent/Range::exactly(30*30*30)).max(),
@@ -1111,7 +1110,6 @@ impl ActionTrait for Rest {
     let varying = query (accessor, &object.varying) ;
     let home = varying.home.as_ref().unwrap();
     if !is_destroyed (accessor, home) {
-      let home_varying = query (accessor, & home.varying);
       let (remaining_food, restored_endurance) = self.effect_amounts (accessor, object);
       //printlnerr!("{:?}", (consumed_food, consumed_food/STANDARD_FOOD_UPKEEP_PER_SECOND, restored_endurance,restored_endurance/SECOND, restored_endurance*100/varying.max_endurance));
       modify_object (accessor, object, | varying | varying.food = 0);
