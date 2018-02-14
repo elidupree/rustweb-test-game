@@ -375,7 +375,7 @@ pub fn reserved_food <A: Accessor <Steward = Steward>>(accessor: &A, object: &Ob
     let position = varying.trajectory.evaluate (*accessor.now());
     for other in objects_touching_circle (accessor, position, varying.awareness_range) {
       let other_varying = query_ref (accessor, & other.varying);
-      if other_varying.is_building && other_varying.object_type != ObjectType::Palace && other_varying.hitpoints > 0 {
+      if other_varying.is_building && other_varying.team == varying.team && other_varying.object_type != ObjectType::Palace && other_varying.hitpoints > 0 {
         let other_debt = reserved_food (accessor, & other) - other_varying.food;
         if other_debt >0 {
           result += other_debt;
