@@ -184,17 +184,23 @@ pub fn destroy_object <A: EventAccessor <Steward = Steward>>(accessor: &A, objec
 }
 
 pub fn modify_object <A: EventAccessor <Steward = Steward>, F: FnOnce(&mut ObjectVarying)>(accessor: &A, object: & ObjectHandle, f: F) {
+  assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be changed") ;
+  let mut changed_trajectory = false;
   modify (accessor, & object.varying, |varying| {
-    (f)(varying)
+    let old_trajectory = varying.trajectory.clone();
+    (f)(varying);
+    changed_trajectory = varying.trajectory != old_trajectory;
   });
-  object_changed (accessor, object);
+  update_prediction (accessor, object);
+  if changed_trajectory {Detector::changed_course (accessor, & get_detector (accessor), object);}
+  //object_changed (accessor, object);
 }
 
-pub fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
+/*pub fn object_changed <A: EventAccessor <Steward = Steward>>(accessor: &A, object: &ObjectHandle) {
   assert! (!is_destroyed (accessor, & object), "destroyed objects shouldn't be changed") ;
-  update_prediction (accessor, object);
+  
   Detector::changed_course (accessor, & get_detector (accessor), object);
-}
+}*/
 
 
 pub fn objects_touching_circle <A: Accessor <Steward = Steward>>(accessor: &A, center: Vector, circle_radius: Coordinate)->Vec<ObjectHandle> {
