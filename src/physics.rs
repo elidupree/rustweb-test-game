@@ -695,7 +695,7 @@ impl ActionTrait for Build {
       -1000
     }
     else if varying.object_type == ObjectType::Palace {
-      stats.food_cost
+      stats.food_cost/STANDARD_FOOD_UPKEEP_PER_SECOND
     }
     else {
       -1000
@@ -772,10 +772,10 @@ impl ActionTrait for Recruit {
     let stats = default_stats(accessor,self.recruit_type.clone());
     let reserved = reserved_food (accessor, object);
     let value = if varying.food < stats.food_cost + reserved {
-      -1000
+      -100000
     }
     else {
-      1000
+      100000
     };
     ActionPracticalities {
       value: value,
