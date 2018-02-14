@@ -1071,15 +1071,30 @@ impl ActionTrait for Wander {
 
 
 
-
+impl Rest {
+  fn effect_amounts <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->(Amount, Amount) {
+    let varying = query_ref (accessor, &object.varying);
+    let home_varying = query_ref (accessor, & varying.home.as_ref().unwrap().varying);
+    let total_food = home_varying.food + varying.food;
+    let current_endurance = varying.endurance.evaluate (*accessor.now());
+    let endurance_deficiency = varying.max_endurance - current_endurance;
+    let desired_food = (Range::exactly (endurance_deficiency)*STANDARD_FOOD_UPKEEP_PER_SECOND/Range::exactly (SECOND)).min();
+    let consumed_food = min (total_food, desired_food);
+    let food_restored_endurance = (Range::exactly (consumed_food) * (SECOND) / Range::exactly (STANDARD_FOOD_UPKEEP_PER_SECOND)).min();
+    let restored_endurance = max (food_restored_endurance, varying.max_endurance/10 - current_endurance);
+    (total_food - consumed_food, restored_endurance)
+  }
+}
 impl ActionTrait for Rest {
   fn practicalities <A: Accessor <Steward = Steward>> (&self, accessor: &A, object: &ObjectHandle)->ActionPracticalities {
     let varying = query_ref (accessor, &object.varying);
     if let Some(home) = varying.home.as_ref() {
       if !is_destroyed (accessor, home) {
-        let endurance_lost_percent = 100*(varying.max_endurance - varying.endurance.evaluate (*accessor.now()))/varying.max_endurance;
+        let (_remaining_food, restored_endurance) = self.effect_amounts (accessor, object);
+        let current_endurance = varying.endurance.evaluate (*accessor.now());
+        let endurance_restored_percent = 100*restored_endurance/varying.max_endurance;
         return ActionPracticalities {
-          value: (Range::exactly(BREAK_EVEN_PRIORITY*20)*endurance_lost_percent*endurance_lost_percent*endurance_lost_percent/Range::exactly(30*30*30)).max(),
+          value: (Range::exactly(BREAK_EVEN_PRIORITY*20)*endurance_restored_percent*endurance_restored_percent*endurance_restored_percent/Range::exactly(30*30*30)).max(),
           indefinitely_impossible: !varying.is_unit,
           impossible_outside_range: Some ((home.clone(), STRIDE)),
           time_costs: Some ((STANDARD_ACTION_SECOND*20, 0, 5)),
@@ -1097,17 +1112,12 @@ impl ActionTrait for Rest {
     let home = varying.home.as_ref().unwrap();
     if !is_destroyed (accessor, home) {
       let home_varying = query (accessor, & home.varying);
-      let total_food = home_varying.food + varying.food;
-      let current_endurance = varying.endurance.evaluate (*accessor.now());
-      let endurance_deficiency = varying.max_endurance - current_endurance;
-      let desired_food = (Range::exactly (endurance_deficiency)*STANDARD_FOOD_UPKEEP_PER_SECOND/Range::exactly (SECOND)).min();
-      let consumed_food = min (total_food, desired_food);
-      let restored_endurance = (Range::exactly (consumed_food) * (SECOND) / Range::exactly (STANDARD_FOOD_UPKEEP_PER_SECOND)).min();
+      let (remaining_food, restored_endurance) = self.effect_amounts (accessor, object);
       //printlnerr!("{:?}", (consumed_food, consumed_food/STANDARD_FOOD_UPKEEP_PER_SECOND, restored_endurance,restored_endurance/SECOND, restored_endurance*100/varying.max_endurance));
       modify_object (accessor, object, | varying | varying.food = 0);
-      modify_object (accessor, home, | other_varying | other_varying.food = total_food - consumed_food);
+      modify_object (accessor, home, | other_varying | other_varying.food = remaining_food);
       modify_object (accessor, object, | varying | {
-        varying.endurance.set (*accessor.now(), current_endurance + restored_endurance);
+        varying.endurance.add (*accessor.now(), restored_endurance);
       });
     }
   }
