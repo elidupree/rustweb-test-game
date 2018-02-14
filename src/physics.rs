@@ -845,7 +845,7 @@ impl ActionTrait for Shoot {
     let varying = query_ref (accessor, &object.varying);
     let target_varying = query_ref (accessor, & self.target.varying);
     ActionPracticalities {
-      value: 100*if is_enemy (accessor, object, & self.target) {1} else {-1},
+      value: if varying.object_type == ObjectType::Ranger {BREAK_EVEN_PRIORITY*BEAST_REWARD/(STANDARD_FOOD_UPKEEP_PER_SECOND*2)} else {100}*if is_enemy (accessor, object, & self.target) {1} else {-1},
       indefinitely_impossible: !(varying.is_unit && varying.object_type != ObjectType::Peasant && target_varying.is_unit && *object != self.target && target_varying.hitpoints >0),
       impossible_outside_range: Some ((self.target.clone(), varying.attack_range)),
       time_costs: Some ((STANDARD_ACTION_SECOND*6/10, STANDARD_ACTION_SECOND*10/10, 5)),
@@ -956,7 +956,7 @@ impl ActionTrait for Collect {
       value: BREAK_EVEN_PRIORITY*self.reward(accessor, object)/STANDARD_FOOD_UPKEEP_PER_SECOND,
       indefinitely_impossible: !(
         (varying.object_type == ObjectType::Ranger && target_varying.object_type == ObjectType::Beast && target_varying.hitpoints <= 0)
-        || (varying.is_unit && target_varying.object_type == ObjectType::Fruit)
+        || (varying.object_type == ObjectType::Beast && target_varying.object_type == ObjectType::Fruit)
       ),
       impossible_outside_range: Some ((self.target.clone(), STRIDE/2)),
       time_costs: Some ((STANDARD_ACTION_SECOND*10/10, 0, 10)),
